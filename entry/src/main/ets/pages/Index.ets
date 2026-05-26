@@ -13,9 +13,13 @@ struct Index {
   @State intervalMs: number = 100;      // 截图间隔（毫秒）
   @State durationSec: number = 5;        // 持续时间（秒）
   @State virtualScreenId: string = 'Not created';
+  @State canExportReport: boolean = false;
 
+  private readonly outputDir: string = '/data/storage/el2/base/haps/entry/files/screenshots';
   private screenManager: VirtualScreenManager | null = null;
   private analysisResult: AnalysisResult | null = null;
+  private lastCaptureIntervalMs: number = 100;
+  private lastCaptureDurationSec: number = 5;
 
   async aboutToAppear() {
     await this.initVirtualScreen();
@@ -30,17 +34,21 @@ struct Index {
   async initVirtualScreen() {
     try {
       this.captureStatus = 'Creating virtual screen...';
+
+      if (this.screenManager) {
+        await this.screenManager.cleanup();
+        this.screenManager = null;
+      }
+
       const defaultDisplay = display.getDefaultDisplaySync();
       this.screenManager = new VirtualScreenManager({
         intervalMs: this.intervalMs,
         durationSec: this.durationSec,
-        outputDir: '/data/storage/el2/base/haps/entry/files/screenshots'
+        outputDir: this.outputDir
       });
 
-      // 确保输出目录存在
-      const outputDir = '/data/storage/el2/base/haps/entry/files/screenshots';
-      if (!fs.accessSync(outputDir)) {
-        fs.mkdirSync(outputDir);
+      if (!fs.accessSync(this.outputDir)) {
+        fs.mkdirSync(this.outputDir);
       }
 
       const screenId = await this.screenManager.createVirtualScreen(
@@ -48,28 +56,38 @@ struct Index {
         defaultDisplay.height
       );
       this.virtualScreenId = screenId.toString();
-      this.captureStatus = 'Virtual screen ready';
+      this.captureStatus = `Virtual screen ready (${this.durationSec}s @ ${Math.round(1000 / this.intervalMs)}fps)`;
     } catch (err) {
       this.captureStatus = `Init failed: ${err.message}`;
     }
   }
 
   async startCapture() {
-    if (!this.screenManager || this.isCapturing) return;
+    if (this.isCapturing) return;
 
     this.isCapturing = true;
-    this.captureBtnText = 'Capturing...';
+    this.captureBtnText = 'Preparing...';
     this.progress = 0;
     this.resultMessage = '';
+    this.canExportReport = false;
 
     try {
+      await this.initVirtualScreen();
+      if (!this.screenManager) {
+        throw new Error('Virtual screen manager is unavailable');
+      }
+
+      this.lastCaptureIntervalMs = this.intervalMs;
+      this.lastCaptureDurationSec = this.durationSec;
+      this.captureBtnText = 'Capturing...';
+
       await this.screenManager.startContinuousCapture((progress) => {
         this.progress = progress;
         this.captureStatus = `Capturing: ${Math.floor(progress * 100)}%`;
       });
 
-      // 截图完成，进行分析
       this.analysisResult = await this.screenManager.analyzeFrameRate();
+      this.canExportReport = true;
       this.displayAnalysisResult();
 
       this.captureStatus = 'Capture completed';
@@ -114,8 +132,8 @@ Continuous Screenshot Performance Report
 Generated: ${new Date().toISOString()}
 ─────────────────────────────────────────
 Configuration:
-  Screenshot interval: ${this.intervalMs} ms
-  Duration: ${this.durationSec} s
+  Screenshot interval: ${this.lastCaptureIntervalMs} ms
+  Duration: ${this.lastCaptureDurationSec} s
 
 Results:
   Status: ${this.analysisResult.status}
@@ -246,7 +264,7 @@ Message: ${this.analysisResult.message}
               .fontSize(16)
               .height(48)
               .layoutWeight(1)
-              .enabled(this.analysisResult !== null)
+              .enabled(this.canExportReport)
               .onClick(() => this.exportReport())
           }
           .width('100%')
