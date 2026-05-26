@@ -21,8 +21,8 @@ struct Index {
   private lastCaptureIntervalMs: number = 100;
   private lastCaptureDurationSec: number = 5;
 
-  async aboutToAppear() {
-    await this.initVirtualScreen();
+  aboutToAppear() {
+    this.initVirtualScreen();
   }
 
   async aboutToDisappear() {

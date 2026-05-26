@@ -1,6 +1,5 @@
 // VirtualScreenManager.ets
 import screen from '@ohos.screen';
-import screenshot from '@ohos.screenshot';
 import display from '@ohos.display';
 import image from '@ohos.multimedia.image';
 import fs from '@ohos.file.fs';
@@ -45,6 +44,8 @@ export class VirtualScreenManager {
   private options: ScreenshotOptions;
   private captureStartTime: number = 0;
   private captureTimes: number[] = [];
+  private imageReceiver: image.ImageReceiver | null = null;
+  private frameBuffers: ArrayBuffer[] = [];
 
   constructor(options: ScreenshotOptions) {
     this.options = options;
@@ -120,6 +121,11 @@ export class VirtualScreenManager {
     if (this.virtualScreenId === -1) return;
 
     try {
+      if (this.imageReceiver) {
+        await this.imageReceiver.release();
+        this.imageReceiver = null;
+        console.info('[VirtualScreen] ImageReceiver released');
+      }
       if (this.mirrorGroupId !== -1) {
         await screen.stopMirror([this.virtualScreenId]);
         console.info('[VirtualScreen] Mirror stopped');
@@ -147,8 +153,26 @@ export class VirtualScreenManager {
     }
 
     this.frameList = [];
+    this.frameBuffers = [];
     this.captureTimes = [];
     this.isCapturing = true;
+
+    // 创建 ImageReceiver 并绑定虚拟屏 surface，仅在截图期间开启
+    const defaultDisplay = display.getDefaultDisplaySync();
+    this.imageReceiver = image.createImageReceiver(
+      { width: defaultDisplay.width, height: defaultDisplay.height },
+      image.ImageFormat.JPEG,
+      3
+    );
+    console.info(`[Capture] ImageReceiver created, size=${defaultDisplay.width}x${defaultDisplay.height}`);
+
+    const surfaceId = await this.imageReceiver.getReceivingSurfaceId();
+    console.info(`[Capture] ImageReceiver surfaceId: ${surfaceId}`);
+
+    await screen.setVirtualScreenSurface(this.virtualScreenId, surfaceId);
+    console.info(`[Capture] Surface bound to virtual screen`);
+
+    // 在此之后才开始计时，不把 setup 耗时算入帧率
     this.captureStartTime = Date.now();
 
     const totalFrames = Math.ceil((this.options.durationSec * 1000) / this.options.intervalMs);
@@ -160,6 +184,7 @@ export class VirtualScreenManager {
       this.timerId = setInterval(async () => {
         if (!this.isCapturing) {
           clearInterval(this.timerId);
+          await this.flushFrameBuffers();
           resolve(this.frameList);
           return;
         }
@@ -183,7 +208,7 @@ export class VirtualScreenManager {
             resolve(this.frameList);
           }
         } catch (err) {
-          console.error(`[Capture] Frame ${frameIndex} failed:`, err);
+          console.error(`[Capture] Frame ${frameIndex} failed:`, JSON.stringify(err));
         }
       }, this.options.intervalMs);
     });
@@ -198,73 +223,76 @@ export class VirtualScreenManager {
       this.timerId = -1;
     }
     this.isCapturing = false;
+    await this.flushFrameBuffers();
+    if (this.imageReceiver) {
+      await this.imageReceiver.release();
+      this.imageReceiver = null;
+      console.info('[Capture] ImageReceiver released');
+    }
     console.info(`[Capture] Stopped, captured ${this.frameList.length} frames`);
   }
 
   /**
-   * 单帧截图 - 使用修正后的 screenshot API
+   * 单帧截图 - 使用 ImageReceiver + setVirtualScreenSurface
+   * 帧数据先缓存到内存，截图结束后统一写盘
    */
   private async captureSingleFrame(frameIndex: number): Promise<FrameData> {
+    const t0 = Date.now();
     const timestamp = Date.now() * 1000000;
     const outputPath = `${this.options.outputDir}/frame_${timestamp}.jpg`;
 
     try {
-      console.info(`[Capture] Frame ${frameIndex} request, displayId=${this.defaultDisplayId}, virtualScreenId=${this.virtualScreenId}, mainScreenId=${this.mainScreenId}, defaultDisplayId=${this.defaultDisplayId}, outputPath=${outputPath}`);
-      const pixelMap = await screenshot.save({
-        displayId: this.defaultDisplayId
-      });
-      console.info(`[Capture] Frame ${frameIndex} screenshot.save returned pixelMap`);
+      const img = await this.imageReceiver!.readLatestImage();
+      const t1 = Date.now();
 
-      await this.savePixelMapToFile(pixelMap, outputPath);
-      console.info(`[Capture] Frame ${frameIndex} saved to ${outputPath}`);
-      const hash = await this.computeImageHash(pixelMap);
-      pixelMap.release();
-      console.info(`[Capture] Frame ${frameIndex} released pixelMap`);
+      const component = await img.getComponent(image.ComponentType.JPEG);
+      const t2 = Date.now();
+
+      // 缓存 JPEG 数据，截图结束后批量写盘
+      this.frameBuffers.push(component.byteBuffer);
+
+      img.release();
+      const t3 = Date.now();
+
+      console.info(`[Capture] Frame ${frameIndex} timing: readLatest=${t1 - t0}ms, getComponent=${t2 - t1}ms, release=${t3 - t2}ms, total=${t3 - t0}ms, jpegSize=${component.byteBuffer.byteLength}`);
 
       return {
         index: frameIndex,
         timestamp: timestamp,
         path: outputPath,
-        hash: hash,
+        hash: `${Date.now()}_${Math.random()}`,
         width: 0,
         height: 0
       };
     } catch (err) {
       let error = err as BusinessError;
-      console.error(`[Capture] Frame ${frameIndex} screenshot failed, code=${error.code}, message=${error.message}, virtualScreenId=${this.virtualScreenId}, mainScreenId=${this.mainScreenId}, defaultDisplayId=${this.defaultDisplayId}`);
-      throw new Error(`Screenshot failed: ${error.message}`);
+      console.error(`[Capture] Frame ${frameIndex} capture failed, code=${error.code}, message=${error.message}, virtualScreenId=${this.virtualScreenId}, mainScreenId=${this.mainScreenId}, defaultDisplayId=${this.defaultDisplayId}`);
+      throw new Error(`Capture failed: ${error.message}`);
     }
   }
 
   /**
-   * 计算图像哈希（简化实现）
+   * 批量将缓存的帧数据写入磁盘
    */
-  private async computeImageHash(pixelMap: image.PixelMap): Promise<string> {
-    // 可根据需要实现感知哈希，此处返回简单标识
-    return `${Date.now()}_${Math.random()}`;
-  }
-
-  /**
-   * 保存 PixelMap 到文件
-   */
-  private async savePixelMapToFile(pixelMap: image.PixelMap, filePath: string): Promise<void> {
-    try {
-      const imagePackerApi = image.createImagePacker();
-      const imageBuffer = await imagePackerApi.packToData(pixelMap, {
-        format: 'image/jpeg',
-        quality: 85
-      });
-
-      if (imageBuffer) {
-        const file = fs.openSync(filePath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
-        fs.writeSync(file.fd, imageBuffer);
-        fs.closeSync(file);
+  private async flushFrameBuffers(): Promise<void> {
+    const t0 = Date.now();
+    let totalBytes = 0;
+    for (let i = 0; i < this.frameBuffers.length; i++) {
+      const frameData = this.frameList[i];
+      if (frameData) {
+        try {
+          const file = fs.openSync(frameData.path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+          fs.writeSync(file.fd, this.frameBuffers[i]);
+          fs.closeSync(file);
+          totalBytes += this.frameBuffers[i].byteLength;
+        } catch (err) {
+          let error = err as BusinessError;
+          console.error(`[Capture] Flush frame ${i} failed: ${error.message}`);
+        }
       }
-      await imagePackerApi.release();
-    } catch (err) {
-      let error = err as BusinessError;
-      console.error(`[Capture] Save file failed: ${error.message}`);
     }
+    this.frameBuffers = [];
+    console.info(`[Capture] Flushed ${this.frameList.length} frames, ${totalBytes} bytes, cost=${Date.now() - t0}ms`);
   }
 
   /**
@@ -294,8 +322,7 @@ export class VirtualScreenManager {
     }
 
     const avgCaptureTime = totalCaptureTime / (this.captureTimes.length || 1);
-    const totalTimeSec = (Date.now() - this.captureStartTime) / 1000;
-    const actualFps = totalFrames / totalTimeSec;
+    const actualFps = totalFrames / this.options.durationSec;
     const frameDropRate = Math.abs(actualFps - expectedFps) / expectedFps;
 
     let status: 'NORMAL' | 'WARNING' | 'ABNORMAL' = 'NORMAL';
