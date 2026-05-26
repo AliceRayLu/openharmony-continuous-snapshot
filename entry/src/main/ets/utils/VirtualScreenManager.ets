@@ -37,6 +37,8 @@ export interface AnalysisResult {
 export class VirtualScreenManager {
   private virtualScreenId: number = -1;
   private mirrorGroupId: number = -1;
+  private mainScreenId: number = -1;
+  private defaultDisplayId: number = -1;
   private isCapturing: boolean = false;
   private timerId: number = -1;
   private frameList: FrameData[] = [];
@@ -80,9 +82,11 @@ export class VirtualScreenManager {
 
     try {
       const defaultDisplay = display.getDefaultDisplaySync();
+      this.defaultDisplayId = defaultDisplay.id;
       const screenWidth = width ?? defaultDisplay.width;
       const screenHeight = height ?? defaultDisplay.height;
       const density = defaultDisplay.densityDPI;
+      console.info(`[VirtualScreen] Default display id=${defaultDisplay.id}, width=${defaultDisplay.width}, height=${defaultDisplay.height}, density=${defaultDisplay.densityDPI}`);
 
       const virtualScreenObj = await screen.createVirtualScreen({
         name: 'ContinuousScreenshotVirtualScreen',
@@ -93,11 +97,13 @@ export class VirtualScreenManager {
       });
 
       this.virtualScreenId = virtualScreenObj.id;
-      console.info(`[VirtualScreen] Virtual screen created, ID: ${this.virtualScreenId}`);
+      console.info(`[VirtualScreen] Virtual screen created, ID: ${this.virtualScreenId}, parent=${virtualScreenObj.parent}, sourceMode=${virtualScreenObj.sourceMode}`);
 
       const mainScreenId = await this.getDefaultMainScreenId();
+      this.mainScreenId = mainScreenId;
+      console.info(`[VirtualScreen] Preparing mirror, mainScreenId=${mainScreenId}, virtualScreenId=${this.virtualScreenId}, defaultDisplayId=${this.defaultDisplayId}`);
       this.mirrorGroupId = await screen.makeMirror(mainScreenId, [this.virtualScreenId]);
-      console.info(`[VirtualScreen] Mirror set, group ID: ${this.mirrorGroupId}`);
+      console.info(`[VirtualScreen] Mirror set, group ID: ${this.mirrorGroupId}, mainScreenId=${mainScreenId}, virtualScreenId=${this.virtualScreenId}`);
 
       return this.virtualScreenId;
     } catch (err) {
@@ -148,7 +154,7 @@ export class VirtualScreenManager {
     const totalFrames = Math.ceil((this.options.durationSec * 1000) / this.options.intervalMs);
     let frameIndex = 0;
 
-    console.info(`[Capture] Starting continuous capture, target ${totalFrames} frames`);
+    console.info(`[Capture] Starting continuous capture, target ${totalFrames} frames, intervalMs=${this.options.intervalMs}, durationSec=${this.options.durationSec}, outputDir=${this.options.outputDir}, virtualScreenId=${this.virtualScreenId}, mainScreenId=${this.mainScreenId}, defaultDisplayId=${this.defaultDisplayId}`);
 
     return new Promise((resolve, reject) => {
       this.timerId = setInterval(async () => {
@@ -203,14 +209,17 @@ export class VirtualScreenManager {
     const outputPath = `${this.options.outputDir}/frame_${timestamp}.jpg`;
 
     try {
-      // 关键修正：使用 displayId 而不是 screenId
+      console.info(`[Capture] Frame ${frameIndex} request, displayId=${this.defaultDisplayId}, virtualScreenId=${this.virtualScreenId}, mainScreenId=${this.mainScreenId}, defaultDisplayId=${this.defaultDisplayId}, outputPath=${outputPath}`);
       const pixelMap = await screenshot.save({
-        displayId: this.virtualScreenId
+        displayId: this.defaultDisplayId
       });
+      console.info(`[Capture] Frame ${frameIndex} screenshot.save returned pixelMap`);
 
       await this.savePixelMapToFile(pixelMap, outputPath);
+      console.info(`[Capture] Frame ${frameIndex} saved to ${outputPath}`);
       const hash = await this.computeImageHash(pixelMap);
       pixelMap.release();
+      console.info(`[Capture] Frame ${frameIndex} released pixelMap`);
 
       return {
         index: frameIndex,
@@ -222,6 +231,7 @@ export class VirtualScreenManager {
       };
     } catch (err) {
       let error = err as BusinessError;
+      console.error(`[Capture] Frame ${frameIndex} screenshot failed, code=${error.code}, message=${error.message}, virtualScreenId=${this.virtualScreenId}, mainScreenId=${this.mainScreenId}, defaultDisplayId=${this.defaultDisplayId}`);
       throw new Error(`Screenshot failed: ${error.message}`);
     }
   }
