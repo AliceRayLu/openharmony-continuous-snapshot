@@ -5,6 +5,10 @@
       "value": "module description"
     },
     {
+      "name": "screenshot_reason",
+      "value": "need "
+    },
+    {
       "name": "EntryAbility_desc",
       "value": "description"
     },

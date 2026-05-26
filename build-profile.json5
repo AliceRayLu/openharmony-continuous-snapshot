@@ -3,15 +3,14 @@
     "signingConfigs": [
       {
         "name": "default",
-        "type": "HarmonyOS",
         "material": {
-          "certpath": "C:\\Users\\A.R.L\\.ohos\\config\\default_continuous_snapshot_xi2MPd8SXgzH_rWjF2YmIFxL18YlxCJVjwcWWM-ERgU=.cer",
-          "storePassword": "0000001BAE740F6D7302D4CD65AF46BEC69C8926893813163DD0FAA86603E3F436C015ACBEBE597C4E1273",
+          "certpath": "C:/Users/A.R.L/.ohos/config/openharmony/default_continuous_snapshot_xi2MPd8SXgzH_rWjF2YmIFxL18YlxCJVjwcWWM-ERgU=.cer",
+          "storePassword": "0000001B3A1C02733F15E0D0EB33956D70162B90AD0255277F84C40C47B08BC56CAC3C4A2F676779362818",
           "keyAlias": "debugKey",
-          "keyPassword": "0000001B8935C6B332D90BAD6F041795C3B34EB0A515383B1C3AA440C3F3BC9E9156F7E1DA152AA381FE89",
-          "profile": "C:\\Users\\A.R.L\\.ohos\\config\\default_continuous_snapshot_xi2MPd8SXgzH_rWjF2YmIFxL18YlxCJVjwcWWM-ERgU=.p7b",
+          "keyPassword": "0000001B22450F813243D5AD1072D0C52B455E21827381C5F9975D8AB22DC0491A738967C9F8AD7FECDDFE",
+          "profile": "C:/Users/A.R.L/.ohos/config/openharmony/default_continuous_snapshot_xi2MPd8SXgzH_rWjF2YmIFxL18YlxCJVjwcWWM-ERgU=.p7b",
           "signAlg": "SHA256withECDSA",
-          "storeFile": "C:\\Users\\A.R.L\\.ohos\\config\\default_continuous_snapshot_xi2MPd8SXgzH_rWjF2YmIFxL18YlxCJVjwcWWM-ERgU=.p12"
+          "storeFile": "C:/Users/A.R.L/.ohos/config/openharmony/default_continuous_snapshot_xi2MPd8SXgzH_rWjF2YmIFxL18YlxCJVjwcWWM-ERgU=.p12"
         }
       }
     ],
