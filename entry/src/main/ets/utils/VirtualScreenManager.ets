@@ -209,9 +209,9 @@ export class VirtualScreenManager {
     const outputPath = `${this.options.outputDir}/frame_${timestamp}.jpg`;
 
     try {
-      console.info(`[Capture] Frame ${frameIndex} request, displayId=${this.virtualScreenId}, virtualScreenId=${this.virtualScreenId}, mainScreenId=${this.mainScreenId}, defaultDisplayId=${this.defaultDisplayId}, outputPath=${outputPath}`);
+      console.info(`[Capture] Frame ${frameIndex} request, displayId=${this.defaultDisplayId}, virtualScreenId=${this.virtualScreenId}, mainScreenId=${this.mainScreenId}, defaultDisplayId=${this.defaultDisplayId}, outputPath=${outputPath}`);
       const pixelMap = await screenshot.save({
-        displayId: this.virtualScreenId
+        displayId: this.defaultDisplayId
       });
       console.info(`[Capture] Frame ${frameIndex} screenshot.save returned pixelMap`);
 
