@@ -208,7 +208,8 @@ export class VirtualScreenManager {
             resolve(this.frameList);
           }
         } catch (err) {
-          console.error(`[Capture] Frame ${frameIndex} failed:`, JSON.stringify(err));
+          let error = err as BusinessError;
+          console.error(`[Capture] Frame ${frameIndex} failed: code=${error.code}, message=${error.message}`);
         }
       }, this.options.intervalMs);
     });
@@ -242,57 +243,85 @@ export class VirtualScreenManager {
     const outputPath = `${this.options.outputDir}/frame_${timestamp}.jpg`;
 
     try {
+      const defaultDisplay = display.getDefaultDisplaySync();
+
       const img = await this.imageReceiver!.readLatestImage();
       const t1 = Date.now();
 
       const component = await img.getComponent(image.ComponentType.JPEG);
       const t2 = Date.now();
 
-      // 缓存 JPEG 数据，截图结束后批量写盘
-      this.frameBuffers.push(component.byteBuffer);
-
-      img.release();
+      // 拷贝一份独立的原始帧数据，避免 ImageReceiver 复用底层缓冲导致所有帧变成同一张
+      const frameCopy = component.byteBuffer.slice(0);
+      this.frameBuffers.push(frameCopy);
       const t3 = Date.now();
 
-      console.info(`[Capture] Frame ${frameIndex} timing: readLatest=${t1 - t0}ms, getComponent=${t2 - t1}ms, release=${t3 - t2}ms, total=${t3 - t0}ms, jpegSize=${component.byteBuffer.byteLength}`);
+      img.release();
+      const t4 = Date.now();
+
+      const elapsed = t4 - t0;
+      console.info(`[Capture] Frame ${frameIndex}: img.format=${img.format}, img.size=${img.size.width}x${img.size.height}, rawSize=${component.byteBuffer.byteLength}, rowStride=${component.rowStride}, pixelStride=${component.pixelStride}, readLatest=${t1 - t0}ms, getComponent=${t2 - t1}ms, copy=${t3 - t2}ms, release=${t4 - t3}ms, total=${elapsed}ms`);
 
       return {
         index: frameIndex,
         timestamp: timestamp,
         path: outputPath,
         hash: `${Date.now()}_${Math.random()}`,
-        width: 0,
-        height: 0
+        width: defaultDisplay.width,
+        height: defaultDisplay.height
       };
     } catch (err) {
       let error = err as BusinessError;
-      console.error(`[Capture] Frame ${frameIndex} capture failed, code=${error.code}, message=${error.message}, virtualScreenId=${this.virtualScreenId}, mainScreenId=${this.mainScreenId}, defaultDisplayId=${this.defaultDisplayId}`);
+      console.error(`[Capture] Frame ${frameIndex} capture failed, code=${error.code}, message=${error.message}`);
       throw new Error(`Capture failed: ${error.message}`);
     }
   }
 
   /**
-   * 批量将缓存的帧数据写入磁盘
+   * 批量编码并写入磁盘：原始 RGBA buffer → createPixelMap(RGBA) → packToData(JPEG) → 写盘
    */
   private async flushFrameBuffers(): Promise<void> {
     const t0 = Date.now();
     let totalBytes = 0;
+    const width = this.frameList[0]?.width ?? 720;
+    const height = this.frameList[0]?.height ?? 1280;
+
     for (let i = 0; i < this.frameBuffers.length; i++) {
       const frameData = this.frameList[i];
-      if (frameData) {
-        try {
-          const file = fs.openSync(frameData.path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
-          fs.writeSync(file.fd, this.frameBuffers[i]);
-          fs.closeSync(file);
-          totalBytes += this.frameBuffers[i].byteLength;
-        } catch (err) {
-          let error = err as BusinessError;
-          console.error(`[Capture] Flush frame ${i} failed: ${error.message}`);
-        }
+      if (!frameData) continue;
+
+      try {
+        const tEncode0 = Date.now();
+
+        const pixelMap = await image.createPixelMap(this.frameBuffers[i], {
+          size: { width: width, height: height },
+          srcPixelFormat: image.PixelMapFormat.RGBA_8888,
+          pixelFormat: image.PixelMapFormat.RGBA_8888
+        });
+        const tPM = Date.now();
+
+        const packer = image.createImagePacker();
+        const jpegBuffer = await packer.packToData(pixelMap, {
+          format: 'image/jpeg',
+          quality: 60
+        });
+        await packer.release();
+        pixelMap.release();
+        const tJPEG = Date.now();
+
+        const file = fs.openSync(frameData.path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+        fs.writeSync(file.fd, jpegBuffer);
+        fs.closeSync(file);
+        totalBytes += jpegBuffer.byteLength;
+
+        console.info(`[Flush] Frame ${i}: createPM=${tPM - tEncode0}ms, encode=${tJPEG - tPM}ms, jpegSize=${jpegBuffer.byteLength}`);
+      } catch (err) {
+        let error = err as BusinessError;
+        console.error(`[Flush] Frame ${i} failed: code=${error.code}, message=${error.message}`);
       }
     }
     this.frameBuffers = [];
-    console.info(`[Capture] Flushed ${this.frameList.length} frames, ${totalBytes} bytes, cost=${Date.now() - t0}ms`);
+    console.info(`[Flush] ${this.frameList.length} frames encoded, ${totalBytes} bytes total, cost=${Date.now() - t0}ms`);
   }
 
   /**
