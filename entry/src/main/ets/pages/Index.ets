@@ -1,5 +1,4 @@
-import { VirtualScreenManager, ScreenshotOptions, AnalysisResult } from '../utils/VirtualScreenManager';
-import display from '@ohos.display';
+import { VirtualScreenManager, AnalysisResult, CaptureFormat } from '../utils/VirtualScreenManager';
 import fs from '@ohos.file.fs';
 
 @Entry
@@ -16,6 +15,7 @@ struct Index {
   @State canExportReport: boolean = false;
 
   private readonly outputDir: string = '/data/storage/el2/base/haps/entry/files/screenshots';
+  private readonly captureFormat: CaptureFormat = 'JPEG';
   private screenManager: VirtualScreenManager | null = null;
   private analysisResult: AnalysisResult | null = null;
   private lastCaptureIntervalMs: number = 100;
@@ -40,23 +40,20 @@ struct Index {
         this.screenManager = null;
       }
 
-      const defaultDisplay = display.getDefaultDisplaySync();
       this.screenManager = new VirtualScreenManager({
         intervalMs: this.intervalMs,
         durationSec: this.durationSec,
-        outputDir: this.outputDir
+        outputDir: this.outputDir,
+        captureFormat: this.captureFormat
       });
 
       if (!fs.accessSync(this.outputDir)) {
         fs.mkdirSync(this.outputDir);
       }
 
-      const screenId = await this.screenManager.createVirtualScreen(
-        defaultDisplay.width,
-        defaultDisplay.height
-      );
+      const screenId = await this.screenManager.createVirtualScreen();
       this.virtualScreenId = screenId.toString();
-      this.captureStatus = `Virtual screen ready (${this.durationSec}s @ ${Math.round(1000 / this.intervalMs)}fps)`;
+      this.captureStatus = `Virtual screen ready (${this.durationSec}s @ ${Math.round(1000 / this.intervalMs)}fps, ${this.captureFormat})`;
     } catch (err) {
       this.captureStatus = `Init failed: ${err.message}`;
     }

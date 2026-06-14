@@ -5,11 +5,19 @@ import image from '@ohos.multimedia.image';
 import fs from '@ohos.file.fs';
 import { BusinessError } from '@ohos.base';
 
+export type CaptureFormat = 'JPEG' | 'YCBCR_422_SP';
+
 export interface ScreenshotOptions {
   intervalMs: number;      // 截图间隔（毫秒）
   durationSec: number;     // 总持续时间（秒）
   outputDir: string;       // 输出目录
+  captureFormat: CaptureFormat;
   pixelThreshold?: number; // 帧差异阈值（默认0.95）
+}
+
+interface FrameBufferEntry {
+  format: CaptureFormat;
+  buffers: ArrayBuffer[];
 }
 
 export interface FrameData {
@@ -45,7 +53,9 @@ export class VirtualScreenManager {
   private captureStartTime: number = 0;
   private captureTimes: number[] = [];
   private imageReceiver: image.ImageReceiver | null = null;
-  private frameBuffers: ArrayBuffer[] = [];
+  private frameBuffers: FrameBufferEntry[] = [];
+  private resolvedCaptureWidth: number = 0;
+  private resolvedCaptureHeight: number = 0;
 
   constructor(options: ScreenshotOptions) {
     this.options = options;
@@ -86,6 +96,8 @@ export class VirtualScreenManager {
       this.defaultDisplayId = defaultDisplay.id;
       const screenWidth = width ?? defaultDisplay.width;
       const screenHeight = height ?? defaultDisplay.height;
+      this.resolvedCaptureWidth = screenWidth;
+      this.resolvedCaptureHeight = screenHeight;
       const density = defaultDisplay.densityDPI;
       console.info(`[VirtualScreen] Default display id=${defaultDisplay.id}, width=${defaultDisplay.width}, height=${defaultDisplay.height}, density=${defaultDisplay.densityDPI}`);
 
@@ -158,13 +170,15 @@ export class VirtualScreenManager {
     this.isCapturing = true;
 
     // 创建 ImageReceiver 并绑定虚拟屏 surface，仅在截图期间开启
-    const defaultDisplay = display.getDefaultDisplaySync();
+    const receiverFormat = this.options.captureFormat === 'JPEG'
+      ? image.ImageFormat.JPEG
+      : image.ImageFormat.YCBCR_422_SP;
     this.imageReceiver = image.createImageReceiver(
-      { width: defaultDisplay.width, height: defaultDisplay.height },
-      image.ImageFormat.JPEG,
+      { width: this.resolvedCaptureWidth, height: this.resolvedCaptureHeight },
+      receiverFormat,
       3
     );
-    console.info(`[Capture] ImageReceiver created, size=${defaultDisplay.width}x${defaultDisplay.height}`);
+    console.info(`[Capture] ImageReceiver created, size=${this.resolvedCaptureWidth}x${this.resolvedCaptureHeight}, format=${this.options.captureFormat}`);
 
     const surfaceId = await this.imageReceiver.getReceivingSurfaceId();
     console.info(`[Capture] ImageReceiver surfaceId: ${surfaceId}`);
@@ -240,35 +254,72 @@ export class VirtualScreenManager {
   private async captureSingleFrame(frameIndex: number): Promise<FrameData> {
     const t0 = Date.now();
     const timestamp = Date.now() * 1000000;
-    const outputPath = `${this.options.outputDir}/frame_${timestamp}.jpg`;
+    const extension = this.options.captureFormat === 'JPEG' ? 'jpg' : 'yuv';
+    const outputPath = `${this.options.outputDir}/frame_${timestamp}.${extension}`;
 
     try {
-      const defaultDisplay = display.getDefaultDisplaySync();
+      const captureWidth = this.resolvedCaptureWidth;
+      const captureHeight = this.resolvedCaptureHeight;
 
       const img = await this.imageReceiver!.readLatestImage();
       const t1 = Date.now();
 
-      const component = await img.getComponent(image.ComponentType.JPEG);
-      const t2 = Date.now();
+      if (this.options.captureFormat === 'JPEG') {
+        const component = await img.getComponent(image.ComponentType.JPEG);
+        const t2 = Date.now();
 
-      // 拷贝一份独立的原始帧数据，避免 ImageReceiver 复用底层缓冲导致所有帧变成同一张
-      const frameCopy = component.byteBuffer.slice(0);
-      this.frameBuffers.push(frameCopy);
-      const t3 = Date.now();
+        const frameCopy = component.byteBuffer.slice(0);
+        this.frameBuffers.push({ format: 'JPEG', buffers: [frameCopy] });
+        const t3 = Date.now();
 
-      img.release();
-      const t4 = Date.now();
+        img.release();
+        const t4 = Date.now();
 
-      const elapsed = t4 - t0;
-      console.info(`[Capture] Frame ${frameIndex}: img.format=${img.format}, img.size=${img.size.width}x${img.size.height}, rawSize=${component.byteBuffer.byteLength}, rowStride=${component.rowStride}, pixelStride=${component.pixelStride}, readLatest=${t1 - t0}ms, getComponent=${t2 - t1}ms, copy=${t3 - t2}ms, release=${t4 - t3}ms, total=${elapsed}ms`);
+        const elapsed = t4 - t0;
+        console.info(`[Capture] Frame ${frameIndex}: mode=JPEG, img.format=${img.format}, img.size=${img.size.width}x${img.size.height}, size=${component.byteBuffer.byteLength}, rowStride=${component.rowStride}, pixelStride=${component.pixelStride}, readLatest=${t1 - t0}ms, getComponent=${t2 - t1}ms, copy=${t3 - t2}ms, release=${t4 - t3}ms, total=${elapsed}ms`);
+      } else {
+        const yComponent = await img.getComponent(image.ComponentType.YUV_Y);
+        const t2 = Date.now();
+
+        const copiedBuffers: ArrayBuffer[] = [yComponent.byteBuffer.slice(0)];
+        let componentSummary = `ySize=${yComponent.byteBuffer.byteLength}, yRowStride=${yComponent.rowStride}, yPixelStride=${yComponent.pixelStride}`;
+        let t3 = t2;
+
+        try {
+          const uComponent = await img.getComponent(image.ComponentType.YUV_U);
+          t3 = Date.now();
+          copiedBuffers.push(uComponent.byteBuffer.slice(0));
+          componentSummary += `, uSize=${uComponent.byteBuffer.byteLength}, uRowStride=${uComponent.rowStride}, uPixelStride=${uComponent.pixelStride}`;
+        } catch (_err) {
+          componentSummary += ', uComponent=unsupported';
+        }
+
+        try {
+          const vComponent = await img.getComponent(image.ComponentType.YUV_V);
+          t3 = Date.now();
+          copiedBuffers.push(vComponent.byteBuffer.slice(0));
+          componentSummary += `, vSize=${vComponent.byteBuffer.byteLength}, vRowStride=${vComponent.rowStride}, vPixelStride=${vComponent.pixelStride}`;
+        } catch (_err) {
+          componentSummary += ', vComponent=unsupported';
+        }
+
+        this.frameBuffers.push({ format: 'YCBCR_422_SP', buffers: copiedBuffers });
+        const t4 = Date.now();
+
+        img.release();
+        const t5 = Date.now();
+
+        const elapsed = t5 - t0;
+        console.info(`[Capture] Frame ${frameIndex}: mode=YCBCR_422_SP, img.format=${img.format}, img.size=${img.size.width}x${img.size.height}, ${componentSummary}, readLatest=${t1 - t0}ms, getY=${t2 - t1}ms, getUV=${t3 - t2}ms, copy=${t4 - t3}ms, release=${t5 - t4}ms, total=${elapsed}ms`);
+      }
 
       return {
         index: frameIndex,
         timestamp: timestamp,
         path: outputPath,
         hash: `${Date.now()}_${Math.random()}`,
-        width: defaultDisplay.width,
-        height: defaultDisplay.height
+        width: captureWidth,
+        height: captureHeight
       };
     } catch (err) {
       let error = err as BusinessError;
@@ -278,50 +329,37 @@ export class VirtualScreenManager {
   }
 
   /**
-   * 批量编码并写入磁盘：原始 RGBA buffer → createPixelMap(RGBA) → packToData(JPEG) → 写盘
+   * 按接收格式批量写盘：JPEG 直写；YCBCR_422_SP 先按原始组件数据落盘做基准测试
    */
   private async flushFrameBuffers(): Promise<void> {
     const t0 = Date.now();
     let totalBytes = 0;
-    const width = this.frameList[0]?.width ?? 720;
-    const height = this.frameList[0]?.height ?? 1280;
 
     for (let i = 0; i < this.frameBuffers.length; i++) {
       const frameData = this.frameList[i];
-      if (!frameData) continue;
+      const frameBuffer = this.frameBuffers[i];
+      if (!frameData || !frameBuffer) continue;
 
       try {
-        const tEncode0 = Date.now();
-
-        const pixelMap = await image.createPixelMap(this.frameBuffers[i], {
-          size: { width: width, height: height },
-          srcPixelFormat: image.PixelMapFormat.RGBA_8888,
-          pixelFormat: image.PixelMapFormat.RGBA_8888
-        });
-        const tPM = Date.now();
-
-        const packer = image.createImagePacker();
-        const jpegBuffer = await packer.packToData(pixelMap, {
-          format: 'image/jpeg',
-          quality: 60
-        });
-        await packer.release();
-        pixelMap.release();
-        const tJPEG = Date.now();
-
+        const tWrite0 = Date.now();
         const file = fs.openSync(frameData.path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
-        fs.writeSync(file.fd, jpegBuffer);
-        fs.closeSync(file);
-        totalBytes += jpegBuffer.byteLength;
 
-        console.info(`[Flush] Frame ${i}: createPM=${tPM - tEncode0}ms, encode=${tJPEG - tPM}ms, jpegSize=${jpegBuffer.byteLength}`);
+        let frameBytes = 0;
+        for (const buffer of frameBuffer.buffers) {
+          fs.writeSync(file.fd, buffer);
+          frameBytes += buffer.byteLength;
+        }
+        fs.closeSync(file);
+
+        totalBytes += frameBytes;
+        console.info(`[Flush] Frame ${i}: format=${frameBuffer.format}, bytes=${frameBytes}, write=${Date.now() - tWrite0}ms`);
       } catch (err) {
         let error = err as BusinessError;
         console.error(`[Flush] Frame ${i} failed: code=${error.code}, message=${error.message}`);
       }
     }
     this.frameBuffers = [];
-    console.info(`[Flush] ${this.frameList.length} frames encoded, ${totalBytes} bytes total, cost=${Date.now() - t0}ms`);
+    console.info(`[Flush] ${this.frameList.length} frames saved, ${totalBytes} bytes total, cost=${Date.now() - t0}ms`);
   }
 
   /**
