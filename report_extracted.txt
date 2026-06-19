@@ -1,0 +1,703 @@
+OpenHarmony 
+
+                                     
+                                           2025  5  30 
+
+
+
+1                  2
+
+1.1  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 2
+
+1.2  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3
+
+1.3  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3
+
+2                  4
+
+2.1  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4
+
+2.2  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4
+
+  2.2.1  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4
+
+  2.2.2  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4
+
+2.3  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4
+
+  2.3.1  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4
+
+  2.3.2  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5
+
+2.4  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+
+2.5  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+
+2.6  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+
+3 SmartPerf        7
+
+3.1 SmartPerf . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 7
+
+3.2 HiSmartPerf . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+
+  3.2.1  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+
+3.3  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+
+3.4  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 9
+
+4 OpenHarmony      10
+
+4.1  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+
+4.2  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+
+4.3  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14
+
+5                  15
+
+                1
+    OpenHarmony 
+
+1 
+
+                                                     1: 
+
+1.1 
+
+       ArkTS  OpenHarmony  API
+       API 
+
+   · @ohos.multimedia.media (AVRecorder):  API
+       
+
+   · @ohos.screen (screenManager):  API
+       
+
+   · @ohos.display:  API
+       
+
+   · @kit.CoreFileKit (fileIo):  API
+   · @kit.AbilityKit (abilityAccessCtrl, bundleManager):  API
+
+       
+   · @kit.MediaLibraryKit (photoAccessHelper):  API
+
+       
+
+      
+
+   · ScreenRecorder : 
+   · CreateScreenRecorder :  ScreenRecorder 
+
+        AVRecorder 
+
+                                                                2
+                                                          OpenHarmony 
+   · setVirtualScreenAsMirror 
+   · ScreenRecorderError : 
+
+1.2 
+
+      
+
+
+1.3 
+
+      
+
+
+                                                                3
+             OpenHarmony 
+
+2 
+
+2.1 
+
+       OpenHarmony 
+
+
+
+2.2 
+
+2.2.1 
+   · : 60 FPS
+   · :  60 
+   · : 60 / 120 
+   · :
+          ­ 
+          ­ 
+
+2.2.2 
+       SP_daemon  -ohtestfps 60  60FPS
+
+
+
+2.3 
+
+2.3.1 
+
+    
+
+ FPS  63.05  53.53  -9.52  -15.1%
+      5.85   2.58   -3.27  -55.8%
+      2.42   1.61   -0.81  -33.5%
+      63.0   54.0   -9.0   -14.3%
+      68     58     -10    -14.7%
+      57     49     -8     -14.0%
+
+       1: 
+
+             4
+        OpenHarmony 
+
+2.3.2 
+
+                                                 2: 
+  
+1.  57­68 FPS 
+2.  49­58 FPS 
+
+                                                   3: 
+  
+
+                                                            5
+                                                          OpenHarmony 
+
+   · 
+   · 
+   · outliers
+
+2.4 
+
+      
+       FPS  63.05 57  68 
+ 2.42 11 FPS  53.53 49  58
+ 1.61 15.1%
+ 56%
+
+      
+
+
+2.5 
+
+      
+API CPU
+ GPU  framebuffer GPU
+
+
+      
+
+
+      ----
+56%""
+""
+
+
+
+2.6 
+
+       55.8%
+ FPS  15.1%
+
+                                                                6
+                                                          OpenHarmony 
+
+3 SmartPerf 
+
+      
+   · OpenHarmony 5.0.1  SmartPerf 
+   · HiSmartPerf
+
+3.1 SmartPerf
+
+       SmartPerf 
+ 4 
+
+                                                4: SmartPerf 
+       SmartPerf 
+   1.  FPS 
+   2. 
+       SmartPerf  HiSmartPerf 
+
+                                                                7
+                                                          OpenHarmony 
+
+3.2 HiSmartPerf
+
+3.2.1 
+       HiSmartPerf  Hiperf Sampling  render_service  cpu 
+
+ workload 
+   ·  1
+   ·  2
+   ·  3
+       trace 
+
+ render_service  5
+
+                                     5:  render_service 
+       render_service 
+
+
+3.3 
+
+       1  23
+ vSyncTask  H:ReceiveVsync
+dataCount  H:RSMainThread::DoComposition
+
+       latency  13 ms­15 ms  22 ms­
+23 ms latency  25 ms­27 ms 
+29 ms­33 ms
+
+       6 
+
+                                                                8
+                                                          OpenHarmony 
+
+                                                                                (a) 
+
+                                                                                  (b) 
+
+                                          6: 
+      H:RSMainThread::DoComposition 
+H:ProcessDisplayRenderNode[0]  H:ProcessDisplayRenderNode[4294967295]
+ latency  4 ms­5 ms 
+ VirtualScreenProcessor  7 
+
+                                                7: 
+
+3.4 
+
+      render_service  render 
+ 55.6% 
+
+                                                                9
+                                 OpenHarmony 
+
+    4 OpenHarmony 
+
+    4.1 
+
+1 const screen = await screenManager.createVirtualScreen({
+2 name: "screenRecorder",
+3 width: Number(dftDisplay.width) * DEVICE_RATE ,
+4 height: Number(dftDisplay.height) * DEVICE_RATE ,
+5 density: Number(dftDisplay.densityDPI) * DEVICE_RATE ,
+6 surfaceId ,
+7 })
+
+          ScreenManager  JsScreenManager  CreateVirtualScreen CreateVirtu-
+    alScreen  OnCreateVirtualScreen ScreenManager  CreateVirtualScreen
+    
+
+1 auto asyncTask = [option , env, task = napiAsyncTask.get()]() {
+
+2      HITRACE_METER_FMT(HITRACE_TAG_WINDOW_MANAGER ,
+
+          " JsDisplayManager :: OnCreateVirtualScreen ");
+
+3      auto screenId =
+
+          SingletonContainer::Get<ScreenManager >().CreateVirtualScreen(option);
+
+4      auto screen = SingletonContainer::Get<ScreenManager >().GetScreenById(screenId);
+
+5      if (screen == nullptr) {
+
+6         DmErrorCode ret = DmErrorCode::DM_ERROR_INVALID_SCREEN;
+
+7         if (screenId == ERROR_ID_NOT_SYSTEM_APP) {
+
+8                ret = DmErrorCode::DM_ERROR_NO_PERMISSION;
+
+9         }
+
+10        task->Reject(env, CreateJsError(env, static_cast <int32_t >(ret),
+
+             "CreateVirtualScreen failed."));
+
+11        TLOGNE(WmsLogTag::DMS, "JsDisplayManager::CreateVirtualScreen failed.");
+
+12     } else {
+
+13        task->Resolve(env, CreateJsValue(env, static_cast <int64_t >(screenId)));
+
+14        TLOGNI(WmsLogTag::DMS, "JsDisplayManager::OnCreateVirtualScreen success");
+
+15     }
+
+16     delete task;
+
+17 };
+
+        C++ 
+
+       · ScreenManager
+       · ScreenManagerAdapter
+       · DisplayerManagerService
+       · AbstractScreenControllerDisplayManager 
+       · RenderService
+       · RenderService::ScreenManager (ScreenManager)
+
+           RenderService  RSScreen  SurfaceID  RSScreen 
+     RSScreen 
+
+                                 10
+                                             OpenHarmony 
+
+1 RSScreen::RSScreen(const VirtualScreenConfigs &configs)
+
+2          : id_(configs.id),
+
+3          mirroredId_(configs.mirrorId),
+
+4          name_(configs.name),
+
+5          width_(configs.width),
+
+6          height_(configs.height),
+
+7          isVirtual_(true),
+
+8          producerSurface_(configs.surface),
+
+9          pixelFormat_(configs.pixelFormat),
+
+10         screenType_ ( RSScreenType :: VIRTUAL_TYPE_SCREEN ) ,
+
+11         whiteList_(configs.whiteList)
+
+12 {
+
+13         VirtualScreenInit () ;
+
+14         RS_LOGW("init virtual screen: {id: %{public}" PRIu64 ", mirroredId: %{public}"
+
+           PRIu64
+
+15         ", w * h: [%{public}u * %{public}u], name: %{public}s, screenType:
+
+           %{public}u, whiteList size: %{public}zu}",
+
+16         id_, mirroredId_ , width_ , height_ , name_.c_str(), screenType_ ,
+
+           whiteList_.size());
+
+17 }
+
+    4.2 
+
+          RenderService  DisplayNode  SurfaceNode DisplayNode 
+    
+
+1 ScreenInfo RSScreenManager::QueryScreenInfo(ScreenId id) const {
+
+2 ...
+
+3       if (!screen ->IsEnable()) {
+
+4          info.state = ScreenState::DISABLED;
+
+5       } else if (!screen ->IsVirtual()) {
+
+6          info.state = ScreenState::HDI_OUTPUT_ENABLE;
+
+7          } else {
+
+8          info.state = ScreenState::SOFTWARE_OUTPUT_ENABLE;
+
+9       }
+
+10 ...
+
+11 }
+
+12
+
+13 bool RSUniRenderVisitor :: InitDisplayInfo ( RSDisplayRenderNode & node) {
+
+14 ...
+
+15      auto mirrorNode = node.GetMirrorSource().lock();
+
+16      node.SetIsMirrorScreen(mirrorNode != nullptr);
+
+17      switch (screenInfo_.state) {
+
+18         case ScreenState::SOFTWARE_OUTPUT_ENABLE:
+
+19         node.SetCompositeType(mirrorNode ?
+
+20                   RSDisplayRenderNode::CompositeType::UNI_RENDER_MIRROR_COMPOSITE :
+
+21                   RSDisplayRenderNode :: CompositeType :: UNI_RENDER_EXPAND_COMPOSITE );
+
+22                   break;
+
+23         case ScreenState::HDI_OUTPUT_ENABLE:
+
+                                               11
+                                        OpenHarmony 
+
+24                   node.SetCompositeType(node.IsForceSoftComposite() ?
+                            RSDisplayRenderNode::CompositeType::SOFTWARE_COMPOSITE :
+25                          RSDisplayRenderNode :: CompositeType :: UNI_RENDER_COMPOSITE );
+
+26                   break;
+            default:
+27
+                     return false;
+28
+
+29
+
+30      }
+
+31
+
+32 ...
+33 }
+
+         DisplayRenderNode 
+
+1 std::shared_ptr <RSProcessor >
+
+        RSProcessorFactory::CreateProcessor(RSDisplayRenderNode::CompositeType type)
+
+2{
+
+3       switch (type) {
+
+4           case RSDisplayRenderNode::CompositeType::SOFTWARE_COMPOSITE:
+
+5           return std::make_shared <RSVirtualScreenProcessor >();
+
+6           case RSDisplayRenderNode::CompositeType::HARDWARE_COMPOSITE:
+
+7           return std::make_shared <RSPhysicalScreenProcessor >();
+
+8 #ifdef RS_ENABLE_GPU
+
+9           case RSDisplayRenderNode::CompositeType::UNI_RENDER_COMPOSITE:
+
+10          return std::make_shared <RSUniRenderProcessor >();
+
+11 # endif
+
+12          case RSDisplayRenderNode::CompositeType::UNI_RENDER_MIRROR_COMPOSITE:
+
+13          case RSDisplayRenderNode::CompositeType::UNI_RENDER_EXPAND_COMPOSITE:
+
+14 # ifdef RS_ENABLE_GPU
+
+15          return std::make_shared <RSUniRenderVirtualProcessor >();
+
+16 # endif
+
+17          default:
+
+18          return nullptr;
+
+19      }
+
+20 }
+
+          Surface 
+    
+
+1 bool RSVirtualScreenProcessor::Init(RSDisplayRenderNode& node, int32_t offsetX ,
+
+        int32_t offsetY, ScreenId mirroredId ,
+
+2                                       std::shared_ptr <RSBaseRenderEngine >
+
+                                        renderEngine)
+
+3{
+
+4 #ifdef RS_ENABLE_GPU
+
+5       if (!RSProcessor::Init(node, offsetX , offsetY , mirroredId , renderEngine)) {
+
+6           return false;
+
+7       }
+
+8 #endif
+
+9
+
+10      if (mirroredId != INVALID_SCREEN_ID) {
+
+11          SetMirrorScreenSwap(node);
+
+                                                12
+                                       OpenHarmony 
+
+12    }
+
+13
+
+14    renderFrameConfig_.usage = BUFFER_USAGE_CPU_READ | BUFFER_USAGE_MEM_DMA;
+
+15
+
+16    auto screenManager = CreateOrGetScreenManager();
+
+17    if (screenManager == nullptr) {
+
+18       RS_LOGE("RSVirtualScreenProcessor::Init for Screen(id %{public}" PRIu64
+
+            "): screenManager is null!",
+
+19          node.GetScreenId());
+
+20       return false;
+
+21    }
+
+22    producerSurface_ = screenManager ->GetProducerSurface(node.GetScreenId());
+
+23    if (producerSurface_ == nullptr) {
+
+24       RS_LOGE("RSVirtualScreenProcessor::Init for Screen(id %{public}" PRIu64
+
+            "): ProducerSurface is null!",
+
+25          node.GetScreenId());
+
+26       return false;
+
+27    }
+
+28
+
+29    bool forceCPU = false;
+
+30    renderFrame_ = renderEngine_ ->RequestFrame(producerSurface_ ,
+
+         renderFrameConfig_ , forceCPU, false);
+
+31    if (renderFrame_ == nullptr) {
+
+32       RS_LOGE("RSVirtualScreenProcessor::Init: renderFrame_ is null!");
+
+33       return false;
+
+34    }
+
+35    canvas_ = renderFrame_ ->GetCanvas();
+
+36    if (canvas_ == nullptr) {
+
+37       return false;
+
+38    }
+
+39    canvas_ -> ConcatMatrix ( screenTransformMatrix_ );
+
+40    return true;
+41
+
+42 }
+
+43
+
+44 void RSVirtualScreenProcessor :: PostProcess ()
+
+45 {
+
+46    if (renderFrame_ == nullptr || canvas_ == nullptr || renderEngine_ == nullptr)
+
+         {
+
+47       RS_LOGE("RSVirtualScreenProcessor::PostProcess renderFrame or canvas or
+
+            renderEngine is nullptr");
+
+48       return;
+
+49    }
+
+50    if (isSecurityDisplay_ && displayHasSecSurface_) {
+
+51       canvas_ ->Clear(Drawing::Color::COLOR_BLACK);
+
+52    }
+
+53    auto surfaceOhos = renderFrame_ ->GetSurface();
+
+54    RSBaseRenderEngine::SetUiTimeStamp(renderFrame_ , surfaceOhos);
+
+55    renderFrame_ ->Flush();
+
+                                             13
+                                   OpenHarmony 
+
+56 }
+
+57
+
+58 void RSVirtualScreenProcessor :: ProcessSurface ( RSSurfaceRenderNode & node)
+
+59 {
+
+60    if (canvas_ == nullptr || renderEngine_ == nullptr) {
+
+61       RS_LOGE("RSVirtualScreenProcessor::ProcessSurface canvas or renderEngine
+
+         is nullptr");
+
+62       return;
+
+63    }
+
+64
+
+65    std::string traceInfo;
+
+66    AppendFormat(traceInfo , "RSVirtualScreenProcessor::ProcessSurface Node:%s ",
+
+         node.GetName().c_str());
+
+67    RS_TRACE_NAME(traceInfo);
+
+68    // prepare BufferDrawParam
+69    // in display's coordinate.
+70    // clipHole: false.
+71    // forceCPU: true.
+72    auto params = RSDividedRenderUtil::CreateBufferDrawParam(node, false, false,
+73
+            false);
+74    const float adaptiveDstWidth = params.dstRect.GetWidth() *
+
+75          mirrorAdaptiveCoefficient_;
+      const float adaptiveDstHeight = params.dstRect.GetHeight() *
+76
+77          mirrorAdaptiveCoefficient_;
+78    params.dstRect.SetLeft(0);
+79    params.dstRect.SetTop(0);
+80    params.dstRect.SetRight(adaptiveDstWidth);
+      params.dstRect.SetBottom(adaptiveDstHeight);
+81 }  renderEngine_ ->DrawSurfaceNodeWithParams(*canvas_ , node, params);
+
+    4.3 
+
+          ---- MirrorScreen Cache)  Sur-
+    face  Encoder 
+    query Surface 
+
+                                   14
+                                                          OpenHarmony 
+
+5 
+
+ 
+ 
+ SmartPerf 
+ OpenHarmony 
+
+                                                               15
+

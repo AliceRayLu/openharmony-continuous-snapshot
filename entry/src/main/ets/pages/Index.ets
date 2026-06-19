@@ -1,5 +1,6 @@
-import { VirtualScreenManager, AnalysisResult, CaptureFormat } from '../utils/VirtualScreenManager';
+import { ScreenRecorderManager, RecordingAnalysisResult, RecordingPreset } from '../utils/ScreenRecorderManager';
 import fs from '@ohos.file.fs';
+import abilityAccessCtrl, { Permissions } from '@ohos.abilityAccessCtrl';
 
 @Entry
 @Component
@@ -8,140 +9,200 @@ struct Index {
   @State progress: number = 0;
   @State resultMessage: string = '';
   @State isCapturing: boolean = false;
-  @State captureBtnText: string = 'Start Capture';
-  @State intervalMs: number = 100;      // 截图间隔（毫秒）
-  @State durationSec: number = 5;        // 持续时间（秒）
-  @State virtualScreenId: string = 'Not created';
+  @State captureBtnText: string = 'Start Recording';
+  @State durationSec: number = 5;
+  @State videoBitrateMbps: number = 8;
+  @State recordPreset: RecordingPreset = 'H264';
   @State canExportReport: boolean = false;
 
-  private readonly outputDir: string = '/data/storage/el2/base/haps/entry/files/screenshots';
-  private readonly captureFormat: CaptureFormat = 'JPEG';
-  private screenManager: VirtualScreenManager | null = null;
-  private analysisResult: AnalysisResult | null = null;
-  private lastCaptureIntervalMs: number = 100;
+  private outputDir: string = '/data/storage/el2/base/haps/entry/files/recordings';
+  private screenRecorder: ScreenRecorderManager | null = null;
+  private analysisResult: RecordingAnalysisResult | null = null;
   private lastCaptureDurationSec: number = 5;
-
-  aboutToAppear() {
-    this.initVirtualScreen();
-  }
+  private lastVideoBitrate: number = 8_000_000;
+  private lastRecordPreset: RecordingPreset = 'H264';
 
   async aboutToDisappear() {
-    if (this.screenManager) {
-      await this.screenManager.cleanup();
+    if (this.screenRecorder) {
+      await this.screenRecorder.cleanup();
+      this.screenRecorder = null;
     }
   }
 
-  async initVirtualScreen() {
-    try {
-      this.captureStatus = 'Creating virtual screen...';
-
-      if (this.screenManager) {
-        await this.screenManager.cleanup();
-        this.screenManager = null;
-      }
-
-      this.screenManager = new VirtualScreenManager({
-        intervalMs: this.intervalMs,
-        durationSec: this.durationSec,
-        outputDir: this.outputDir,
-        captureFormat: this.captureFormat
-      });
-
-      if (!fs.accessSync(this.outputDir)) {
-        fs.mkdirSync(this.outputDir);
-      }
-
-      const screenId = await this.screenManager.createVirtualScreen();
-      this.virtualScreenId = screenId.toString();
-      this.captureStatus = `Virtual screen ready (${this.durationSec}s @ ${Math.round(1000 / this.intervalMs)}fps, ${this.captureFormat})`;
-    } catch (err) {
-      this.captureStatus = `Init failed: ${err.message}`;
-    }
-  }
-
-  async startCapture() {
+  async startRecording() {
     if (this.isCapturing) return;
 
+    await this.ensureRecordingPermission();
+
     this.isCapturing = true;
-    this.captureBtnText = 'Preparing...';
+    this.captureBtnText = 'Recording...';
     this.progress = 0;
     this.resultMessage = '';
     this.canExportReport = false;
+    this.captureStatus = 'Preparing recorder...';
 
     try {
-      await this.initVirtualScreen();
-      if (!this.screenManager) {
-        throw new Error('Virtual screen manager is unavailable');
+      const uiContext = this.getUIContext();
+      const hostContext = uiContext.getHostContext();
+      if (!hostContext) {
+        throw new Error('UI host context is unavailable');
+      }
+      this.outputDir = `${hostContext.filesDir}/recordings`;
+
+      if (!fs.accessSync(this.outputDir)) {
+        fs.mkdirSync(this.outputDir, true);
+      }
+      console.info(`[Index] Recording output directory: ${this.outputDir}`);
+
+      if (this.screenRecorder) {
+        await this.screenRecorder.cleanup();
       }
 
-      this.lastCaptureIntervalMs = this.intervalMs;
       this.lastCaptureDurationSec = this.durationSec;
-      this.captureBtnText = 'Capturing...';
+      this.lastVideoBitrate = this.videoBitrateMbps * 1_000_000;
+      this.lastRecordPreset = this.recordPreset;
 
-      await this.screenManager.startContinuousCapture((progress) => {
-        this.progress = progress;
-        this.captureStatus = `Capturing: ${Math.floor(progress * 100)}%`;
+      this.screenRecorder = new ScreenRecorderManager({
+        durationSec: this.durationSec,
+        outputDir: this.outputDir,
+        videoBitrate: this.lastVideoBitrate,
+        preset: this.recordPreset,
+        micEnabled: false
       });
 
-      this.analysisResult = await this.screenManager.analyzeFrameRate();
+      this.analysisResult = await this.screenRecorder.startRecording((progress) => {
+        this.progress = progress;
+        this.captureStatus = `Recording: ${Math.floor(progress * 100)}%`;
+      });
+
+      if (!this.analysisResult) {
+        throw new Error('Recording finished without analysis result');
+      }
+
+      this.progress = 1;
       this.canExportReport = true;
       this.displayAnalysisResult();
-
-      this.captureStatus = 'Capture completed';
+      this.captureStatus = this.analysisResult.status === 'ABNORMAL'
+        ? 'Recording finished with errors'
+        : 'Recording completed';
     } catch (err) {
-      this.captureStatus = `Capture failed: ${err.message}`;
+      this.captureStatus = `Recording failed: ${err.message}`;
       this.resultMessage = `Error: ${err.message}`;
     } finally {
+      if (this.screenRecorder) {
+        await this.screenRecorder.cleanup();
+        this.screenRecorder = null;
+      }
       this.isCapturing = false;
-      this.captureBtnText = 'Start Capture';
+      this.captureBtnText = 'Start Recording';
     }
   }
 
   displayAnalysisResult() {
     if (!this.analysisResult) return;
 
+    const metadataDurationText = this.analysisResult.metadataDurationMs > 0
+      ? `${this.analysisResult.metadataDurationMs} ms`
+      : 'Unavailable';
+    const eventText = this.analysisResult.stateEvents.length > 0
+      ? this.analysisResult.stateEvents.join('\n      ')
+      : 'None';
+
     this.resultMessage = `
 ═══════════════════════════════════════
-          FRAME RATE ANALYSIS
+          RECORDING ANALYSIS
 ═══════════════════════════════════════
 Status: ${this.analysisResult.status}
 Message: ${this.analysisResult.message}
+Error detail: ${this.analysisResult.errorMessage || 'None'}
 
-Metrics:
-  ├─ Total frames captured: ${this.analysisResult.totalFrames}
-  ├─ Expected frame rate: ${this.analysisResult.expectedFps} fps
-  ├─ Actual frame rate: ${this.analysisResult.actualFps.toFixed(2)} fps
-  ├─ Frame drop rate: ${(this.analysisResult.frameDropRate * 100).toFixed(2)}%
-  ├─ Avg capture time: ${this.analysisResult.avgCaptureTimeMs.toFixed(2)} ms
-  └─ Max capture time: ${this.analysisResult.maxCaptureTimeMs.toFixed(2)} ms
+Configuration:
+  ├─ Duration: ${this.lastCaptureDurationSec} s
+  ├─ Preset: ${this.lastRecordPreset}
+  └─ Video bitrate: ${this.videoBitrateMbps} Mbps
 
-Abnormal frames: ${this.analysisResult.abnormalTimestamps.length}
+Output:
+  ├─ Path: ${this.analysisResult.outputPath}
+  ├─ File size: ${this.formatFileSize(this.analysisResult.fileSizeBytes)}
+  ├─ Mime type: ${this.analysisResult.mimeType}
+  ├─ Has video: ${this.analysisResult.hasVideo}
+  ├─ Has audio: ${this.analysisResult.hasAudio}
+  └─ Resolution: ${this.analysisResult.frameWidth}x${this.analysisResult.frameHeight}
+
+Timing:
+  ├─ Requested duration: ${this.analysisResult.requestedDurationSec}s
+  ├─ Wall-clock duration: ${this.analysisResult.wallClockDurationMs} ms
+  ├─ Metadata duration: ${metadataDurationText}
+  ├─ Duration drift: ${this.analysisResult.durationDriftMs} ms
+  ├─ Init time: ${this.analysisResult.initTimeMs} ms
+  ├─ Start latency: ${this.analysisResult.startLatencyMs} ms
+  ├─ Stop latency: ${this.analysisResult.stopLatencyMs} ms
+  ├─ Finalize time: ${this.analysisResult.finalizeTimeMs} ms
+  └─ Avg produced bitrate: ${this.analysisResult.avgBitrateMbps.toFixed(2)} Mbps
+
+State events:
+      ${eventText}
 ═══════════════════════════════════════
     `;
+  }
+
+  private async ensureRecordingPermission(): Promise<void> {
+    const permissions: Permissions[] = [
+      'ohos.permission.CAPTURE_SCREEN',
+      'ohos.permission.MICROPHONE'
+    ];
+    const uiContext = this.getUIContext();
+    const hostContext = uiContext.getHostContext();
+
+    if (!hostContext) {
+      throw new Error('UI host context is unavailable');
+    }
+
+    const atManager = abilityAccessCtrl.createAtManager();
+    const result = await atManager.requestPermissionsFromUser(hostContext, permissions);
+    const authResults = result.authResults ?? [];
+    const deniedIndex = authResults.findIndex((status) => status !== 0);
+
+    if (deniedIndex !== -1) {
+      throw new Error(`Permission was denied: ${permissions[deniedIndex]}`);
+    }
   }
 
   async exportReport() {
     if (!this.analysisResult) return;
 
-    const reportPath = '/data/storage/el2/base/haps/entry/files/report.txt';
+    const reportPath = '/data/storage/el2/base/haps/entry/files/recording_report.txt';
     const reportContent = `
-Continuous Screenshot Performance Report
+Screen Recording Performance Report
 Generated: ${new Date().toISOString()}
 ─────────────────────────────────────────
 Configuration:
-  Screenshot interval: ${this.lastCaptureIntervalMs} ms
   Duration: ${this.lastCaptureDurationSec} s
+  Preset: ${this.lastRecordPreset}
+  Video bitrate: ${this.videoBitrateMbps} Mbps
 
 Results:
   Status: ${this.analysisResult.status}
-  Total Frames: ${this.analysisResult.totalFrames}
-  Expected FPS: ${this.analysisResult.expectedFps}
-  Actual FPS: ${this.analysisResult.actualFps.toFixed(2)}
-  Frame Drop Rate: ${(this.analysisResult.frameDropRate * 100).toFixed(2)}%
-  Avg Capture Time: ${this.analysisResult.avgCaptureTimeMs.toFixed(2)} ms
-  Max Capture Time: ${this.analysisResult.maxCaptureTimeMs.toFixed(2)} ms
+  Message: ${this.analysisResult.message}
+  Error detail: ${this.analysisResult.errorMessage || 'None'}
+  Output path: ${this.analysisResult.outputPath}
+  File size: ${this.analysisResult.fileSizeBytes} bytes
+  Mime type: ${this.analysisResult.mimeType}
+  Has video: ${this.analysisResult.hasVideo}
+  Has audio: ${this.analysisResult.hasAudio}
+  Resolution: ${this.analysisResult.frameWidth}x${this.analysisResult.frameHeight}
+  Requested duration: ${this.analysisResult.requestedDurationSec} s
+  Wall-clock duration: ${this.analysisResult.wallClockDurationMs} ms
+  Metadata duration: ${this.analysisResult.metadataDurationMs} ms
+  Duration drift: ${this.analysisResult.durationDriftMs} ms
+  Init time: ${this.analysisResult.initTimeMs} ms
+  Start latency: ${this.analysisResult.startLatencyMs} ms
+  Stop latency: ${this.analysisResult.stopLatencyMs} ms
+  Finalize time: ${this.analysisResult.finalizeTimeMs} ms
+  Average produced bitrate: ${this.analysisResult.avgBitrateMbps.toFixed(2)} Mbps
 
-Message: ${this.analysisResult.message}
+State events:
+  ${this.analysisResult.stateEvents.join('\n  ')}
     `;
 
     try {
@@ -154,11 +215,20 @@ Message: ${this.analysisResult.message}
     }
   }
 
+  private formatFileSize(sizeBytes: number): string {
+    if (sizeBytes >= 1024 * 1024) {
+      return `${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
+    }
+    if (sizeBytes >= 1024) {
+      return `${(sizeBytes / 1024).toFixed(2)} KB`;
+    }
+    return `${sizeBytes} B`;
+  }
+
   build() {
     Column() {
-      // 标题栏
       Row() {
-        Text('Continuous Screenshot Tool')
+        Text('Screen Recording Tool')
           .fontSize(20)
           .fontWeight(FontWeight.Bold)
           .margin({ left: 16 })
@@ -169,7 +239,6 @@ Message: ${this.analysisResult.message}
 
       Scroll() {
         Column({ space: 16 }) {
-          // 配置面板
           Column() {
             Text('Configuration')
               .fontSize(16)
@@ -177,32 +246,12 @@ Message: ${this.analysisResult.message}
               .margin({ bottom: 12 })
 
             Row() {
-              Text('Interval (ms):')
-                .width(120)
-              Slider({
-                value: this.intervalMs,
-                min: 16,
-                max: 500,
-                step: 1
-              })
-                .layoutWeight(1)
-                .onChange((value) => {
-                  this.intervalMs = value;
-                })
-              Text(`${this.intervalMs}ms → ${Math.round(1000 / this.intervalMs)}fps`)
-                .width(100)
-                .fontSize(12)
-            }
-            .width('100%')
-            .margin({ bottom: 12 })
-
-            Row() {
               Text('Duration (s):')
                 .width(120)
               Slider({
                 value: this.durationSec,
                 min: 1,
-                max: 30,
+                max: 120,
                 step: 1
               })
                 .layoutWeight(1)
@@ -214,12 +263,50 @@ Message: ${this.analysisResult.message}
                 .fontSize(12)
             }
             .width('100%')
+            .margin({ bottom: 12 })
+
+            Row() {
+              Text('Bitrate (Mbps):')
+                .width(120)
+              Slider({
+                value: this.videoBitrateMbps,
+                min: 2,
+                max: 20,
+                step: 1
+              })
+                .layoutWeight(1)
+                .onChange((value) => {
+                  this.videoBitrateMbps = value;
+                })
+              Text(`${this.videoBitrateMbps} Mbps`)
+                .width(80)
+                .fontSize(12)
+            }
+            .width('100%')
+            .margin({ bottom: 12 })
+
+            Row({ space: 12 }) {
+              Text('Preset:')
+                .width(120)
+              Button(this.recordPreset === 'H264' ? '● H.264 MP4' : '○ H.264 MP4')
+                .type(ButtonType.Normal)
+                .layoutWeight(1)
+                .onClick(() => {
+                  this.recordPreset = 'H264';
+                })
+              Button(this.recordPreset === 'H265' ? '● H.265 MP4' : '○ H.265 MP4')
+                .type(ButtonType.Normal)
+                .layoutWeight(1)
+                .onClick(() => {
+                  this.recordPreset = 'H265';
+                })
+            }
+            .width('100%')
           }
           .padding(16)
           .backgroundColor('#FFFFFF')
           .borderRadius(12)
 
-          // 状态面板
           Column() {
             Text('Status')
               .fontSize(16)
@@ -238,7 +325,7 @@ Message: ${this.analysisResult.message}
             }
 
             Row() {
-              Text(`Virtual Screen ID: ${this.virtualScreenId}`)
+              Text(`Output directory: ${this.outputDir}`)
                 .fontSize(12)
                 .fontColor('#999999')
             }
@@ -248,14 +335,13 @@ Message: ${this.analysisResult.message}
           .backgroundColor('#FFFFFF')
           .borderRadius(12)
 
-          // 控制按钮
           Row({ space: 16 }) {
             Button(this.captureBtnText)
               .fontSize(16)
               .height(48)
               .layoutWeight(1)
               .enabled(!this.isCapturing)
-              .onClick(() => this.startCapture())
+              .onClick(() => this.startRecording())
 
             Button('Export Report')
               .fontSize(16)
@@ -266,7 +352,6 @@ Message: ${this.analysisResult.message}
           }
           .width('100%')
 
-          // 分析结果
           if (this.resultMessage) {
             Column() {
               Text('Analysis Result')

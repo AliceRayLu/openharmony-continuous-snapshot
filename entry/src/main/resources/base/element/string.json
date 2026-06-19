@@ -5,8 +5,12 @@
       "value": "module description"
     },
     {
-      "name": "screenshot_reason",
-      "value": "need "
+      "name": "screen_record_reason",
+      "value": "Used to start screen recording after user confirmation."
+    },
+    {
+      "name": "microphone_record_reason",
+      "value": "Used when the recorder preset requires audio capture during screen recording."
     },
     {
       "name": "EntryAbility_desc",

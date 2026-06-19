@@ -15,9 +15,21 @@
     "requestPermissions": [
       {
         "name": "ohos.permission.CAPTURE_SCREEN",
-        "reason": "$string:screenshot_reason",
+        "reason": "$string:screen_record_reason",
         "usedScene": {
-          "abilities": ["EntryAbility"],
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.MICROPHONE",
+        "reason": "$string:microphone_record_reason",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
           "when": "inuse"
         }
       }
@@ -56,11 +68,6 @@
             "resource": "$profile:backup_config"
           }
         ],
-      }
-    ],
-    "requestPermissions": [
-      {
-        "name": "ohos.permission.CAPTURE_SCREEN"
       }
     ]
   }
