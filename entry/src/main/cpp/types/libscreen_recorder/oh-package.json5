@@ -1,0 +1,6 @@
+{
+  "name": "libscreen_recorder.so",
+  "version": "1.0.0",
+  "description": "Type declarations for the local native screen recorder module.",
+  "types": "./Index.d.ts"
+}

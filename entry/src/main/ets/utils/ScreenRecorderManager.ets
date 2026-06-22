@@ -1,8 +1,11 @@
-import media from '@ohos.multimedia.media';
-import screen from '@ohos.screen';
 import display from '@ohos.display';
 import fs from '@ohos.file.fs';
 import { BusinessError } from '@ohos.base';
+import {
+  NativeCreateRecorderOptions,
+  NativeScreenRecorder,
+  NativeStopRecorderResult
+} from './NativeScreenRecorder';
 
 export type RecordingPreset = 'H264' | 'H265';
 
@@ -49,9 +52,9 @@ export interface RecordingAnalysisResult {
 }
 
 export class ScreenRecorderManager {
-  private recorder: media.AVRecorder | null = null;
+  private recorderId: number = -1;
+  private nativeModuleVersion: string = '';
   private lifecycleState: RecorderLifecycleState = 'idle';
-  private outputFile: fs.File | null = null;
   private outputPath: string = '';
   private progressTimerId: number = -1;
   private autoStopTimerId: number = -1;
@@ -65,10 +68,7 @@ export class ScreenRecorderManager {
   private hasStartedRecording: boolean = false;
   private resolvedWidth: number = 0;
   private resolvedHeight: number = 0;
-  private mainScreenId: number = -1;
-  private defaultDisplayId: number = -1;
-  private virtualScreenId: number = -1;
-  private mirrorGroupId: number = -1;
+  private nativeStopResult: NativeStopRecorderResult | null = null;
 
   private initStartedAtMs: number = 0;
   private initCompletedAtMs: number = 0;
@@ -78,8 +78,6 @@ export class ScreenRecorderManager {
   private stopCompletedAtMs: number = 0;
   private finalizeCompletedAtMs: number = 0;
 
-  private recorderStateChangeHandler: ((state: media.AVRecorderState, reason: media.StateChangeReason) => void) | null = null;
-  private errorHandler: ((error: BusinessError) => void) | null = null;
   private readonly options: ScreenRecordOptions;
 
   constructor(options: ScreenRecordOptions) {
@@ -101,41 +99,35 @@ export class ScreenRecorderManager {
 
     try {
       this.ensureOutputDir();
-      this.prepareOutputFile();
+      this.prepareOutputPath();
       this.resolveFrameSize();
-      this.logPreparedOutputFile();
+      this.logPreparedOutputPath();
+      await this.logNativeModuleVersion();
 
       this.lifecycleState = 'initializing';
-      this.recorder = await media.createAVRecorder();
-      this.registerRecorderCallbacks();
-
-      const config = this.buildRecorderConfig();
-      this.logRecorderConfig(config);
+      this.addStateEvent('NATIVE_CREATE_REQUESTED');
       this.initStartedAtMs = Date.now();
-      console.info(`[Recorder] Calling prepare() at ${this.initStartedAtMs}`);
-      await this.recorder.prepare(config);
+      const createOptions = this.buildCreateRecorderOptions();
+      this.logCreateRecorderOptions(createOptions);
+      const createResult = await NativeScreenRecorder.createRecorder(createOptions);
+      this.recorderId = createResult.recorderId;
       this.initCompletedAtMs = Date.now();
-      console.info(`[Recorder] prepare() completed in ${this.initCompletedAtMs - this.initStartedAtMs} ms`);
-
-      const surfaceId = await this.recorder.getInputSurface();
-      console.info(`[Recorder] Input surface obtained: ${surfaceId}`);
-
-      await this.createVirtualScreen(surfaceId);
+      this.addStateEvent(`NATIVE_CREATE_COMPLETED_${this.recorderId}`);
 
       this.startRequestedAtMs = Date.now();
-      console.info(`[Recorder] Starting AVRecorder, path=${this.outputPath}, bitrate=${this.options.videoBitrate}, preset=${this.options.preset}, width=${this.resolvedWidth}, height=${this.resolvedHeight}, mainScreenId=${this.mainScreenId}, virtualScreenId=${this.virtualScreenId}`);
-      await this.recorder.start();
+      this.addStateEvent('NATIVE_START_REQUESTED');
+      console.info(`[Recorder] Starting native recorder, path=${this.outputPath}, bitrate=${this.options.videoBitrate}, preset=${this.options.preset}, width=${this.resolvedWidth}, height=${this.resolvedHeight}, recorderId=${this.recorderId}`);
+      await NativeScreenRecorder.startRecorder(this.recorderId);
       this.recordingStartedAtMs = Date.now();
       this.hasStartedRecording = true;
       this.lifecycleState = 'recording';
+      this.addStateEvent('NATIVE_START_COMPLETED');
 
       this.startProgressLoop();
       this.armAutoStop();
-      console.info(`[Recorder] AVRecorder started to ${this.outputPath}`);
+      console.info(`[Recorder] Native recorder started to ${this.outputPath}`);
     } catch (err) {
-      const error = this.asBusinessError(err);
-      const fileInfo = this.describeOutputFileForError();
-      this.errorMessage = `Start recording failed: code=${error.code}, message=${error.message}, ${fileInfo}`;
+      this.errorMessage = `Start recording failed: code=${this.getErrorCode(err)}, message=${this.getErrorMessage(err)}, ${this.describeOutputFileForError()}`;
       console.error(`[Recorder] ${this.errorMessage}`);
       await this.disposeResources();
       this.rejectCompletion(new Error(this.errorMessage));
@@ -170,89 +162,27 @@ export class ScreenRecorderManager {
     }
   }
 
-  private prepareOutputFile(): void {
+  private prepareOutputPath(): void {
     const timestamp = Date.now();
     this.outputPath = `${this.options.outputDir}/screen_record_${timestamp}.mp4`;
-    this.outputFile = fs.openSync(this.outputPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
   }
 
   private resolveFrameSize(): void {
     const defaultDisplay = display.getDefaultDisplaySync();
-    this.defaultDisplayId = defaultDisplay.id;
     this.resolvedWidth = this.options.frameWidth ?? defaultDisplay.width;
     this.resolvedHeight = this.options.frameHeight ?? defaultDisplay.height;
   }
 
-  private buildRecorderConfig(): media.AVRecorderConfig {
+  private buildCreateRecorderOptions(): NativeCreateRecorderOptions {
     return {
-      audioSourceType: media.AudioSourceType.AUDIO_SOURCE_TYPE_MIC,
-      videoSourceType: media.VideoSourceType.VIDEO_SOURCE_TYPE_SURFACE_YUV,
-      profile: {
-        audioBitrate: 128000,
-        audioChannels: 2,
-        audioCodec: media.CodecMimeType.AUDIO_AAC,
-        audioSampleRate: 48000,
-        fileFormat: media.ContainerFormatType.CFT_MPEG_4,
-        videoBitrate: this.options.videoBitrate,
-        videoCodec: this.toVideoCodec(this.options.preset),
-        videoFrameWidth: this.resolvedWidth,
-        videoFrameHeight: this.resolvedHeight,
-        videoFrameRate: 60
-      },
-      url: `fd://${this.outputFile!.fd}`
-    };
-  }
-
-  private async createVirtualScreen(surfaceId: string): Promise<void> {
-    const defaultDisplay = display.getDefaultDisplaySync();
-    const density = defaultDisplay.densityDPI;
-    console.info(`[VirtualScreen] Creating recorder virtual screen with surfaceId=${surfaceId}`);
-
-    const virtualScreenObj = await screen.createVirtualScreen({
-      name: 'ScreenRecorderVirtualScreen',
+      outputPath: this.outputPath,
       width: this.resolvedWidth,
       height: this.resolvedHeight,
-      density: density,
-      surfaceId: surfaceId
-    });
-
-    this.virtualScreenId = virtualScreenObj.id;
-    console.info(`[VirtualScreen] Virtual screen created, id=${this.virtualScreenId}, parent=${virtualScreenObj.parent}, sourceMode=${virtualScreenObj.sourceMode}`);
-
-    const allScreens = await screen.getAllScreens();
-    const mainScreen = allScreens.find(item => item.sourceMode === screen.ScreenSourceMode.SCREEN_MAIN);
-    if (!mainScreen) {
-      throw new Error('Main screen not found');
-    }
-
-    this.mainScreenId = mainScreen.id;
-    this.mirrorGroupId = await screen.makeMirror(this.mainScreenId, [this.virtualScreenId]);
-    console.info(`[VirtualScreen] Mirror established, group=${this.mirrorGroupId}, mainScreenId=${this.mainScreenId}, virtualScreenId=${this.virtualScreenId}`);
-  }
-
-  private registerRecorderCallbacks(): void {
-    if (!this.recorder) {
-      return;
-    }
-
-    this.recorderStateChangeHandler = (state: media.AVRecorderState, reason: media.StateChangeReason) => {
-      this.stateEvents.push({
-        label: `STATE_${state}_REASON_${reason}`,
-        timestampMs: Date.now()
-      });
-      console.info(`[Recorder] State changed: state=${state}, reason=${reason}`);
+      frameRate: 60,
+      videoBitrate: this.options.videoBitrate,
+      preset: this.options.preset,
+      micEnabled: this.options.micEnabled ?? false
     };
-
-    this.errorHandler = (error: BusinessError) => {
-      this.errorMessage = `Recorder error ${error.code}: ${error.message}`;
-      console.error(`[Recorder] ${this.errorMessage}`);
-      if (this.lifecycleState !== 'stopping' && this.lifecycleState !== 'released') {
-        void this.finishRecording('error');
-      }
-    };
-
-    this.recorder.on('stateChange', this.recorderStateChangeHandler);
-    this.recorder.on('error', this.errorHandler);
   }
 
   private startProgressLoop(): void {
@@ -286,18 +216,22 @@ export class ScreenRecorderManager {
 
     this.lifecycleState = 'stopping';
     this.clearTimers();
+    this.addStateEvent(`NATIVE_STOP_REQUESTED_${reason}`);
     console.info(`[Recorder] Finishing recording, reason=${reason}`);
 
     try {
-      if (this.recorder && this.hasStartedRecording) {
+      if (this.recorderId !== -1 && this.hasStartedRecording) {
         this.stopRequestedAtMs = Date.now();
-        await this.recorder.stop();
+        this.nativeStopResult = await NativeScreenRecorder.stopRecorder(this.recorderId);
         this.stopCompletedAtMs = Date.now();
+        this.addStateEvent('NATIVE_STOP_COMPLETED');
+        if (this.nativeStopResult.errorMessage) {
+          this.terminalStateMessage = this.nativeStopResult.errorMessage;
+        }
       }
     } catch (err) {
-      const error = this.asBusinessError(err);
       if (!this.errorMessage) {
-        this.errorMessage = `Stop recording failed: code=${error.code}, message=${error.message}`;
+        this.errorMessage = `Stop recording failed: code=${this.getErrorCode(err)}, message=${this.getErrorMessage(err)}`;
       }
     }
 
@@ -308,7 +242,10 @@ export class ScreenRecorderManager {
 
   private async buildAnalysisResult(): Promise<RecordingAnalysisResult> {
     const fileSizeBytes = this.getOutputFileSize();
-    const wallClockDurationMs = this.computeWallClockDurationMs();
+    const nativeStopResult = this.nativeStopResult;
+    const wallClockDurationMs = nativeStopResult && nativeStopResult.durationMs > 0
+      ? nativeStopResult.durationMs
+      : this.computeWallClockDurationMs();
     const metadataDurationMs = 0;
     const durationDriftMs = Math.abs(wallClockDurationMs - this.options.durationSec * 1000);
     const avgBitrateMbps = wallClockDurationMs > 0
@@ -334,7 +271,7 @@ export class ScreenRecorderManager {
     if (this.errorMessage || this.terminalStateMessage || fileSizeBytes <= 0) {
       status = 'ABNORMAL';
       message = this.errorMessage || this.terminalStateMessage || 'Recording file is invalid';
-    } else if (durationDriftMs > 1000 || this.containsStateKeyword('error')) {
+    } else if (durationDriftMs > 1000 || this.containsStateKeyword('ERROR')) {
       status = 'WARNING';
       message = durationDriftMs > 1000
         ? `Recording duration drifted by ${durationDriftMs} ms`
@@ -344,26 +281,26 @@ export class ScreenRecorderManager {
     return {
       status,
       message,
-      outputPath: this.outputPath,
+      outputPath: this.nativeStopResult?.outputPath || this.outputPath,
       requestedDurationSec: this.options.durationSec,
       wallClockDurationMs,
       metadataDurationMs,
       durationDriftMs,
       fileSizeBytes,
       avgBitrateMbps,
-      frameWidth: this.resolvedWidth,
-      frameHeight: this.resolvedHeight,
+      frameWidth: this.nativeStopResult?.frameWidth || this.resolvedWidth,
+      frameHeight: this.nativeStopResult?.frameHeight || this.resolvedHeight,
       configuredBitrate: this.options.videoBitrate,
       preset: this.options.preset,
       mimeType: 'video/mp4',
-      hasVideo: fileSizeBytes > 0,
-      hasAudio: true,
+      hasVideo: (this.nativeStopResult?.hasVideo ?? true) && fileSizeBytes > 0,
+      hasAudio: false,
       initTimeMs,
       startLatencyMs,
       stopLatencyMs,
       finalizeTimeMs,
       stateEvents: this.stateEvents.map((event) => `${event.label} @ ${new Date(event.timestampMs).toISOString()}`),
-      errorMessage: this.errorMessage
+      errorMessage: this.errorMessage || this.terminalStateMessage
     };
   }
 
@@ -391,25 +328,34 @@ export class ScreenRecorderManager {
     return Date.now() - this.recordingStartedAtMs;
   }
 
-  private logPreparedOutputFile(): void {
-    if (!this.outputFile) {
-      return;
+  private logPreparedOutputPath(): void {
+    const exists = this.outputPath ? fs.accessSync(this.outputPath) : false;
+    let size = -1;
+    if (exists) {
+      try {
+        size = fs.statSync(this.outputPath).size;
+      } catch (_err) {}
     }
 
-    let size = -1;
-    try {
-      size = fs.statSync(this.outputPath).size;
-    } catch (_err) {}
-
-    console.info(`[Recorder] Output file prepared: path=${this.outputPath}, fd=${this.outputFile.fd}, initialSize=${size}`);
+    console.info(`[Recorder] Output path prepared: path=${this.outputPath}, fileExists=${exists}, fileSize=${size}`);
   }
 
-  private logRecorderConfig(config: media.AVRecorderConfig): void {
-    console.info(`[Recorder] Config: url=${config.url}, videoSourceType=${config.videoSourceType}, audioSourceType=${config.audioSourceType}, videoBitrate=${config.profile.videoBitrate}, audioBitrate=${config.profile.audioBitrate}, videoCodec=${config.profile.videoCodec}, audioCodec=${config.profile.audioCodec}, fileFormat=${config.profile.fileFormat}, videoFrameRate=${config.profile.videoFrameRate}, width=${config.profile.videoFrameWidth}, height=${config.profile.videoFrameHeight}`);
+  private async logNativeModuleVersion(): Promise<void> {
+    try {
+      this.nativeModuleVersion = await NativeScreenRecorder.getVersion();
+      console.info(`[NativeRecorder] Loaded native module version: ${this.nativeModuleVersion}`);
+    } catch (err) {
+      const message = this.getErrorMessage(err);
+      console.error(`[NativeRecorder] Failed to load native module: ${message}`);
+      throw new Error(`Failed to load native recorder module: ${message}`);
+    }
+  }
+
+  private logCreateRecorderOptions(options: NativeCreateRecorderOptions): void {
+    console.info(`[Recorder] Native options: path=${options.outputPath}, width=${options.width}, height=${options.height}, frameRate=${options.frameRate}, videoBitrate=${options.videoBitrate}, preset=${options.preset}, micEnabled=${options.micEnabled}`);
   }
 
   private describeOutputFileForError(): string {
-    const fd = this.outputFile ? this.outputFile.fd : -1;
     const exists = this.outputPath ? fs.accessSync(this.outputPath) : false;
     let size = -1;
 
@@ -419,7 +365,7 @@ export class ScreenRecorderManager {
       } catch (_err) {}
     }
 
-    return `path=${this.outputPath}, fd=${fd}, fileExists=${exists}, fileSize=${size}, mainScreenId=${this.mainScreenId}, virtualScreenId=${this.virtualScreenId}, defaultDisplayId=${this.defaultDisplayId}`;
+    return `path=${this.outputPath}, fileExists=${exists}, fileSize=${size}, recorderId=${this.recorderId}`;
   }
 
   private clearTimers(): void {
@@ -435,79 +381,27 @@ export class ScreenRecorderManager {
   }
 
   private async disposeResources(): Promise<void> {
-    await this.destroyVirtualScreen();
-
-    if (this.recorder) {
-      this.unregisterRecorderCallbacks();
+    if (this.recorderId !== -1) {
       try {
-        await this.recorder.release();
+        NativeScreenRecorder.releaseRecorder(this.recorderId);
+        this.addStateEvent('NATIVE_RELEASE_COMPLETED');
       } catch (err) {
-        const error = this.asBusinessError(err);
         if (!this.errorMessage) {
-          this.errorMessage = `Release recorder failed: code=${error.code}, message=${error.message}`;
+          this.errorMessage = `Release recorder failed: code=${this.getErrorCode(err)}, message=${this.getErrorMessage(err)}`;
         }
       }
-      this.recorder = null;
-    }
-
-    if (this.outputFile) {
-      try {
-        fs.closeSync(this.outputFile);
-      } catch (_err) {}
-      this.outputFile = null;
+      this.recorderId = -1;
     }
 
     this.finalizeCompletedAtMs = Date.now();
     this.lifecycleState = 'released';
   }
 
-  private async destroyVirtualScreen(): Promise<void> {
-    if (this.virtualScreenId === -1) {
-      return;
-    }
-
-    try {
-      if (this.mirrorGroupId !== -1) {
-        await screen.stopMirror([this.virtualScreenId]);
-        console.info('[VirtualScreen] Mirror stopped');
-        this.mirrorGroupId = -1;
-      }
-    } catch (err) {
-      const error = this.asBusinessError(err);
-      console.warn(`[VirtualScreen] stopMirror failed: code=${error.code}, message=${error.message}`);
-    }
-
-    try {
-      await screen.destroyVirtualScreen(this.virtualScreenId);
-      console.info(`[VirtualScreen] Virtual screen destroyed: ${this.virtualScreenId}`);
-    } catch (err) {
-      const error = this.asBusinessError(err);
-      console.warn(`[VirtualScreen] destroyVirtualScreen failed: code=${error.code}, message=${error.message}`);
-    }
-
-    this.virtualScreenId = -1;
-  }
-
-  private unregisterRecorderCallbacks(): void {
-    if (!this.recorder) {
-      return;
-    }
-
-    if (this.recorderStateChangeHandler) {
-      this.recorder.off('stateChange', this.recorderStateChangeHandler);
-      this.recorderStateChangeHandler = null;
-    }
-
-    if (this.errorHandler) {
-      this.recorder.off('error', this.errorHandler);
-      this.errorHandler = null;
-    }
-  }
-
   private resetRunState(): void {
     this.lifecycleState = 'idle';
+    this.recorderId = -1;
     this.outputPath = '';
-    this.outputFile = null;
+    this.nativeModuleVersion = '';
     this.progressTimerId = -1;
     this.autoStopTimerId = -1;
     this.progressCallback = null;
@@ -517,10 +411,7 @@ export class ScreenRecorderManager {
     this.hasStartedRecording = false;
     this.resolvedWidth = 0;
     this.resolvedHeight = 0;
-    this.mainScreenId = -1;
-    this.defaultDisplayId = -1;
-    this.virtualScreenId = -1;
-    this.mirrorGroupId = -1;
+    this.nativeStopResult = null;
     this.initStartedAtMs = 0;
     this.initCompletedAtMs = 0;
     this.startRequestedAtMs = 0;
@@ -528,8 +419,6 @@ export class ScreenRecorderManager {
     this.stopRequestedAtMs = 0;
     this.stopCompletedAtMs = 0;
     this.finalizeCompletedAtMs = 0;
-    this.recorderStateChangeHandler = null;
-    this.errorHandler = null;
   }
 
   private resetCompletion(): void {
@@ -556,13 +445,35 @@ export class ScreenRecorderManager {
     return this.stateEvents.some((event) => event.label.includes(keyword));
   }
 
-  private toVideoCodec(preset: RecordingPreset): media.CodecMimeType {
-    return preset === 'H265'
-      ? media.CodecMimeType.VIDEO_HEVC
-      : media.CodecMimeType.VIDEO_AVC;
+  private addStateEvent(label: string): void {
+    this.stateEvents.push({
+      label,
+      timestampMs: Date.now()
+    });
   }
 
-  private asBusinessError(err: Object): BusinessError {
-    return err as BusinessError;
+  private getErrorCode(err: Object): string {
+    const businessError = err as BusinessError;
+    if (businessError && businessError.code !== undefined) {
+      return `${businessError.code}`;
+    }
+    return 'undefined';
+  }
+
+  private getErrorMessage(err: Object): string {
+    if (err instanceof Error) {
+      return err.message;
+    }
+
+    const businessError = err as BusinessError;
+    if (businessError && businessError.message) {
+      return businessError.message;
+    }
+
+    try {
+      return JSON.stringify(err);
+    } catch (_jsonErr) {
+      return 'Unknown error';
+    }
   }
 }
