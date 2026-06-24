@@ -15,9 +15,13 @@ export interface ScreenshotOptions {
   pixelThreshold?: number; // 帧差异阈值（默认0.95）
 }
 
-interface FrameBufferEntry {
-  format: CaptureFormat;
-  buffers: ArrayBuffer[];
+interface EncodeTiming {
+  createPixelMapMs: number;
+  createPackerMs: number;
+  openFileMs: number;
+  packToFileMs: number;
+  closeFileMs: number;
+  totalMs: number;
 }
 
 interface PendingImageEntry {
@@ -52,6 +56,8 @@ export interface AnalysisResult {
 export class VirtualScreenManager {
   private static readonly RECEIVER_CAPACITY: number = 10;
   private static readonly WAIT_DRAIN_INTERVAL_MS: number = 16;
+  private static readonly JPEG_FORMAT: string = 'image/jpeg';
+  private static readonly JPEG_QUALITY: number = 85;
 
   private virtualScreenId: number = -1;
   private mirrorGroupId: number = -1;
@@ -65,7 +71,6 @@ export class VirtualScreenManager {
   private lastCaptureTime: number = 0;
   private captureTimes: number[] = [];
   private imageReceiver: image.ImageReceiver | null = null;
-  private frameBuffers: FrameBufferEntry[] = [];
   private resolvedCaptureWidth: number = 0;
   private resolvedCaptureHeight: number = 0;
   private latestPendingImage: PendingImageEntry | null = null;
@@ -116,12 +121,12 @@ export class VirtualScreenManager {
     try {
       const defaultDisplay = display.getDefaultDisplaySync();
       this.defaultDisplayId = defaultDisplay.id;
-      const screenWidth = width ?? defaultDisplay.width;
-      const screenHeight = height ?? defaultDisplay.height;
+      const screenWidth = width ?? 352;
+      const screenHeight = height ?? 640;
       this.resolvedCaptureWidth = screenWidth;
       this.resolvedCaptureHeight = screenHeight;
       const density = defaultDisplay.densityDPI;
-      console.info(`[VirtualScreen] Default display id=${defaultDisplay.id}, width=${defaultDisplay.width}, height=${defaultDisplay.height}, density=${defaultDisplay.densityDPI}`);
+      console.info(`[VirtualScreen] Default display id=${defaultDisplay.id}, width=${defaultDisplay.width}, height=${defaultDisplay.height}, captureWidth=${screenWidth}, captureHeight=${screenHeight}, density=${defaultDisplay.densityDPI}`);
 
       const virtualScreenObj = await screen.createVirtualScreen({
         name: 'ContinuousScreenshotVirtualScreen',
@@ -187,7 +192,6 @@ export class VirtualScreenManager {
     }
 
     this.frameList = [];
-    this.frameBuffers = [];
     this.captureTimes = [];
     this.lastCaptureTime = 0;
     this.latestPendingImage = null;
@@ -248,7 +252,6 @@ export class VirtualScreenManager {
 
     await this.waitForProcessingIdle();
     await this.releasePendingImages('stop');
-    await this.flushFrameBuffers();
 
     if (this.imageReceiver) {
       await this.imageReceiver.release();
@@ -302,12 +305,12 @@ export class VirtualScreenManager {
 
         this.processingImage = entry;
         const frameStart = Date.now();
+        this.lastCaptureTime = frameStart;
         try {
           const frameData = await this.captureSingleFrame(entry, this.frameIndex);
           frameData.index = this.frameIndex;
           this.frameList.push(frameData);
           this.captureTimes.push(Date.now() - frameStart);
-          this.lastCaptureTime = Date.now();
 
           this.frameIndex++;
           if (this.onProgressCallback) {
@@ -316,7 +319,6 @@ export class VirtualScreenManager {
         } catch (err) {
           let error = err as BusinessError;
           console.error(`[Capture] Frame ${this.frameIndex} failed: code=${error.code}, message=${error.message}`);
-          this.lastCaptureTime = Date.now();
         } finally {
           await this.releasePendingImage(entry, 'processed');
           this.processingImage = null;
@@ -422,8 +424,8 @@ export class VirtualScreenManager {
   }
 
   /**
-   * 单帧截图 - 处理已经从 ImageReceiver 读出的 Image
-   * 帧数据先缓存到内存，截图结束后统一写盘
+   * 单帧截图 - 处理已经从 ImageReceiver 读出的 Image。
+   * 当前实验路径不缓存 raw buffer，而是在 release Image 前直接把 component.byteBuffer 编码写成 JPEG。
    */
   private async captureSingleFrame(entry: PendingImageEntry, frameIndex: number): Promise<FrameData> {
     const t0 = Date.now();
@@ -439,13 +441,10 @@ export class VirtualScreenManager {
       const component = await img.getComponent(image.ComponentType.JPEG);
       const componentEnd = Date.now();
 
-      const copyStart = Date.now();
-      const frameCopy = component.byteBuffer.slice(0);
-      this.frameBuffers.push({ format: 'JPEG', buffers: [frameCopy] });
-      const copyEnd = Date.now();
+      const encodeTiming = await this.encodeComponentToJpegFile(component, captureWidth, captureHeight, outputPath);
+      const elapsed = Date.now() - t0;
 
-      const elapsed = copyEnd - t0;
-      console.info(`[Capture] Frame ${frameIndex}: source=${entry.source}, mode=JPEG, img.format=${img.format}, img.size=${img.size.width}x${img.size.height}, size=${component.byteBuffer.byteLength}, rowStride=${component.rowStride}, pixelStride=${component.pixelStride}, readLatest=${entry.readCostMs}ms, queueWait=${t0 - entry.queuedAt}ms, getComponent=${componentEnd - componentStart}ms, copy=${copyEnd - copyStart}ms, total=${elapsed}ms, pending=${this.latestPendingImage ? 1 : 0}, discardedImages=${this.discardedImageCount}`);
+      console.info(`[Capture] Frame ${frameIndex}: source=${entry.source}, mode=directEncode, img.format=${img.format}, img.size=${img.size.width}x${img.size.height}, size=${component.byteBuffer.byteLength}, rowStride=${component.rowStride}, pixelStride=${component.pixelStride}, readLatest=${entry.readCostMs}ms, queueWait=${t0 - entry.queuedAt}ms, getComponent=${componentEnd - componentStart}ms, createPixelMap=${encodeTiming.createPixelMapMs}ms, createPacker=${encodeTiming.createPackerMs}ms, open=${encodeTiming.openFileMs}ms, packToFile=${encodeTiming.packToFileMs}ms, close=${encodeTiming.closeFileMs}ms, encodeAndWrite=${encodeTiming.totalMs}ms, total=${elapsed}ms, pending=${this.latestPendingImage ? 1 : 0}, discardedImages=${this.discardedImageCount}`);
 
       return {
         index: frameIndex,
@@ -462,38 +461,60 @@ export class VirtualScreenManager {
     }
   }
 
-  /**
-   * 按 JPEG 接收格式批量写盘：直接写出 ImageReceiver 返回的 JPEG 数据
-   */
-  private async flushFrameBuffers(): Promise<void> {
-    const t0 = Date.now();
-    let totalBytes = 0;
+  private async encodeComponentToJpegFile(component: image.Component, width: number, height: number, path: string): Promise<EncodeTiming> {
+    const totalStart = Date.now();
 
-    for (let i = 0; i < this.frameBuffers.length; i++) {
-      const frameData = this.frameList[i];
-      const frameBuffer = this.frameBuffers[i];
-      if (!frameData || !frameBuffer) continue;
+    const pixelMapStart = Date.now();
+    const pixelMap = await image.createPixelMap(component.byteBuffer, {
+      size: {
+        width: width,
+        height: height
+      },
+      srcPixelFormat: image.PixelMapFormat.RGBA_8888,
+      pixelFormat: image.PixelMapFormat.RGBA_8888,
+      alphaType: image.AlphaType.PREMUL
+    });
+    const pixelMapEnd = Date.now();
 
+    const packerStart = Date.now();
+    const packer = image.createImagePacker();
+    const packerEnd = Date.now();
+
+    const openStart = Date.now();
+    const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+    const openEnd = Date.now();
+
+    let packToFileMs = 0;
+    let closeFileMs = 0;
+    try {
+      const packStart = Date.now();
+      await packer.packToFile(pixelMap, file.fd, {
+        format: VirtualScreenManager.JPEG_FORMAT,
+        quality: VirtualScreenManager.JPEG_QUALITY
+      });
+      packToFileMs = Date.now() - packStart;
+    } finally {
       try {
-        const tWrite0 = Date.now();
-        const file = fs.openSync(frameData.path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
-
-        let frameBytes = 0;
-        for (const buffer of frameBuffer.buffers) {
-          fs.writeSync(file.fd, buffer);
-          frameBytes += buffer.byteLength;
-        }
-        fs.closeSync(file);
-
-        totalBytes += frameBytes;
-        console.info(`[Flush] Frame ${i}: format=${frameBuffer.format}, bytes=${frameBytes}, write=${Date.now() - tWrite0}ms`);
-      } catch (err) {
-        let error = err as BusinessError;
-        console.error(`[Flush] Frame ${i} failed: code=${error.code}, message=${error.message}`);
+        await pixelMap.release();
+      } catch (_) {
       }
+      try {
+        await packer.release();
+      } catch (_) {
+      }
+      const closeStart = Date.now();
+      fs.closeSync(file);
+      closeFileMs = Date.now() - closeStart;
     }
-    this.frameBuffers = [];
-    console.info(`[Flush] ${this.frameList.length} frames saved, ${totalBytes} bytes total, cost=${Date.now() - t0}ms`);
+
+    return {
+      createPixelMapMs: pixelMapEnd - pixelMapStart,
+      createPackerMs: packerEnd - packerStart,
+      openFileMs: openEnd - openStart,
+      packToFileMs: packToFileMs,
+      closeFileMs: closeFileMs,
+      totalMs: Date.now() - totalStart
+    };
   }
 
   /**
