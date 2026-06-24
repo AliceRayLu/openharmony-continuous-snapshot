@@ -20,6 +20,14 @@ interface FrameBufferEntry {
   buffers: ArrayBuffer[];
 }
 
+interface PendingImageEntry {
+  img: image.Image;
+  readCostMs: number;
+  queuedAt: number;
+  source: string;
+  estimatedSkippedBefore: number;
+}
+
 export interface FrameData {
   index: number;
   timestamp: number;       // 时间戳（纳秒）
@@ -42,6 +50,9 @@ export interface AnalysisResult {
 }
 
 export class VirtualScreenManager {
+  private static readonly RECEIVER_CAPACITY: number = 10;
+  private static readonly WAIT_DRAIN_INTERVAL_MS: number = 16;
+
   private virtualScreenId: number = -1;
   private mirrorGroupId: number = -1;
   private mainScreenId: number = -1;
@@ -51,11 +62,22 @@ export class VirtualScreenManager {
   private frameList: FrameData[] = [];
   private options: ScreenshotOptions;
   private captureStartTime: number = 0;
+  private lastCaptureTime: number = 0;
   private captureTimes: number[] = [];
   private imageReceiver: image.ImageReceiver | null = null;
   private frameBuffers: FrameBufferEntry[] = [];
   private resolvedCaptureWidth: number = 0;
   private resolvedCaptureHeight: number = 0;
+  private latestPendingImage: PendingImageEntry | null = null;
+  private processingImage: PendingImageEntry | null = null;
+  private processingFrame: boolean = false;
+  private receiverReading: boolean = false;
+  private stoppingCapture: boolean = false;
+  private frameIndex: number = 0;
+  private totalFrames: number = 0;
+  private discardedImageCount: number = 0;
+  private resolveCapture: ((frames: FrameData[]) => void) | null = null;
+  private onProgressCallback: ((progress: number) => void) | undefined = undefined;
 
   constructor(options: ScreenshotOptions) {
     this.options = options;
@@ -167,15 +189,25 @@ export class VirtualScreenManager {
     this.frameList = [];
     this.frameBuffers = [];
     this.captureTimes = [];
+    this.lastCaptureTime = 0;
+    this.latestPendingImage = null;
+    this.processingImage = null;
+    this.processingFrame = false;
+    this.receiverReading = false;
+    this.stoppingCapture = false;
+    this.frameIndex = 0;
+    this.discardedImageCount = 0;
+    this.onProgressCallback = onProgress;
+    this.totalFrames = Math.ceil((this.options.durationSec * 1000) / this.options.intervalMs);
     this.isCapturing = true;
 
     // 创建 ImageReceiver 并绑定虚拟屏 surface，仅在截图期间开启
     this.imageReceiver = image.createImageReceiver(
       { width: this.resolvedCaptureWidth, height: this.resolvedCaptureHeight },
       image.ImageFormat.JPEG,
-      3
+      VirtualScreenManager.RECEIVER_CAPACITY
     );
-    console.info(`[Capture] ImageReceiver created, size=${this.resolvedCaptureWidth}x${this.resolvedCaptureHeight}, format=${this.options.captureFormat}`);
+    console.info(`[Capture] ImageReceiver created, size=${this.resolvedCaptureWidth}x${this.resolvedCaptureHeight}, format=${this.options.captureFormat}, capacity=${VirtualScreenManager.RECEIVER_CAPACITY}, drainApi=readLatestImage`);
 
     const surfaceId = await this.imageReceiver.getReceivingSurfaceId();
     console.info(`[Capture] ImageReceiver surfaceId: ${surfaceId}`);
@@ -185,44 +217,13 @@ export class VirtualScreenManager {
 
     // 在此之后才开始计时，不把 setup 耗时算入帧率
     this.captureStartTime = Date.now();
+    this.lastCaptureTime = this.captureStartTime - this.options.intervalMs;
 
-    const totalFrames = Math.ceil((this.options.durationSec * 1000) / this.options.intervalMs);
-    let frameIndex = 0;
+    console.info(`[Capture] Starting continuous capture, target ${this.totalFrames} frames, intervalMs=${this.options.intervalMs}, durationSec=${this.options.durationSec}, outputDir=${this.options.outputDir}, virtualScreenId=${this.virtualScreenId}, mainScreenId=${this.mainScreenId}, defaultDisplayId=${this.defaultDisplayId}`);
 
-    console.info(`[Capture] Starting continuous capture, target ${totalFrames} frames, intervalMs=${this.options.intervalMs}, durationSec=${this.options.durationSec}, outputDir=${this.options.outputDir}, virtualScreenId=${this.virtualScreenId}, mainScreenId=${this.mainScreenId}, defaultDisplayId=${this.defaultDisplayId}`);
-
-    return new Promise((resolve, reject) => {
-      this.timerId = setInterval(async () => {
-        if (!this.isCapturing) {
-          clearInterval(this.timerId);
-          await this.flushFrameBuffers();
-          resolve(this.frameList);
-          return;
-        }
-
-        const frameStart = Date.now();
-        try {
-          const frameData = await this.captureSingleFrame(frameIndex);
-          frameData.index = frameIndex;
-          this.frameList.push(frameData);
-          this.captureTimes.push(Date.now() - frameStart);
-
-          if (onProgress) {
-            onProgress((frameIndex + 1) / totalFrames);
-          }
-
-          frameIndex++;
-
-          const elapsed = (Date.now() - this.captureStartTime) / 1000;
-          if (elapsed >= this.options.durationSec) {
-            await this.stopContinuousCapture();
-            resolve(this.frameList);
-          }
-        } catch (err) {
-          let error = err as BusinessError;
-          console.error(`[Capture] Frame ${frameIndex} failed: code=${error.code}, message=${error.message}`);
-        }
-      }, this.options.intervalMs);
+    return new Promise((resolve) => {
+      this.resolveCapture = resolve;
+      this.captureLoop();
     });
   }
 
@@ -230,25 +231,201 @@ export class VirtualScreenManager {
    * 停止连续截图
    */
   async stopContinuousCapture(): Promise<void> {
+    if (this.stoppingCapture) {
+      return;
+    }
+    if (!this.isCapturing && this.resolveCapture === null) {
+      return;
+    }
+
+    this.stoppingCapture = true;
+
     if (this.timerId !== -1) {
-      clearInterval(this.timerId);
+      clearTimeout(this.timerId);
       this.timerId = -1;
     }
     this.isCapturing = false;
+
+    await this.waitForProcessingIdle();
+    await this.releasePendingImages('stop');
     await this.flushFrameBuffers();
+
     if (this.imageReceiver) {
       await this.imageReceiver.release();
       this.imageReceiver = null;
       console.info('[Capture] ImageReceiver released');
     }
-    console.info(`[Capture] Stopped, captured ${this.frameList.length} frames`);
+
+    const resolve = this.resolveCapture;
+    this.resolveCapture = null;
+    this.onProgressCallback = undefined;
+    console.info(`[Capture] Stopped, captured ${this.frameList.length} frames, discardedImages=${this.discardedImageCount}`);
+    if (resolve) {
+      resolve(this.frameList);
+    }
+  }
+
+  private async captureLoop(): Promise<void> {
+    this.processingFrame = true;
+    try {
+      await this.updateLatestPendingImage('initial');
+
+      while (this.isCapturing) {
+        if (Date.now() - this.captureStartTime >= this.options.durationSec * 1000) {
+          break;
+        }
+
+        await this.updateLatestPendingImage('beforeWait');
+        const now = Date.now();
+        const elapsedSinceLastCapture = now - this.lastCaptureTime;
+        if (elapsedSinceLastCapture < this.options.intervalMs) {
+          const sleepMs = Math.min(
+            VirtualScreenManager.WAIT_DRAIN_INTERVAL_MS,
+            this.options.intervalMs - elapsedSinceLastCapture
+          );
+          await this.sleep(Math.max(1, sleepMs));
+          continue;
+        }
+
+        if (this.latestPendingImage === null) {
+          await this.updateLatestPendingImage('empty');
+          if (this.latestPendingImage === null) {
+            await this.sleep(5);
+            continue;
+          }
+        }
+
+        const entry = this.takeLatestPendingImage();
+        if (!entry) {
+          continue;
+        }
+
+        this.processingImage = entry;
+        const frameStart = Date.now();
+        try {
+          const frameData = await this.captureSingleFrame(entry, this.frameIndex);
+          frameData.index = this.frameIndex;
+          this.frameList.push(frameData);
+          this.captureTimes.push(Date.now() - frameStart);
+          this.lastCaptureTime = Date.now();
+
+          this.frameIndex++;
+          if (this.onProgressCallback) {
+            this.onProgressCallback(Math.min(this.frameIndex / this.totalFrames, 1));
+          }
+        } catch (err) {
+          let error = err as BusinessError;
+          console.error(`[Capture] Frame ${this.frameIndex} failed: code=${error.code}, message=${error.message}`);
+          this.lastCaptureTime = Date.now();
+        } finally {
+          await this.releasePendingImage(entry, 'processed');
+          this.processingImage = null;
+        }
+
+      }
+    } finally {
+      this.processingFrame = false;
+      await this.stopContinuousCapture();
+    }
+  }
+
+  private takeLatestPendingImage(): PendingImageEntry | null {
+    const entry = this.latestPendingImage;
+    this.latestPendingImage = null;
+    return entry;
+  }
+
+  private async updateLatestPendingImage(source: string): Promise<void> {
+    if (!this.isCapturing || !this.imageReceiver || this.receiverReading) {
+      return;
+    }
+
+    this.receiverReading = true;
+    let img: image.Image | null = null;
+    let releasedCount = 0;
+    let readCount = 0;
+    const drainStart = Date.now();
+    try {
+      const oldEntry = this.latestPendingImage;
+      if (oldEntry) {
+        this.latestPendingImage = null;
+        await this.releasePendingImage(oldEntry, 'replace latest before read');
+        this.discardedImageCount++;
+        releasedCount++;
+      }
+
+      const readStart = Date.now();
+      img = await this.imageReceiver.readLatestImage();
+      const readCostMs = Date.now() - readStart;
+      const queuedAt = Date.now();
+      readCount = 1;
+
+      this.latestPendingImage = {
+        img: img,
+        readCostMs: readCostMs,
+        queuedAt: queuedAt,
+        source: source,
+        estimatedSkippedBefore: 0
+      };
+      img = null;
+    } catch (_) {
+      if (img) {
+        try {
+          await img.release();
+        } catch (_) {
+        }
+      }
+    } finally {
+      this.receiverReading = false;
+    }
+
+    if (readCount > 0 || releasedCount > 0) {
+      console.info(`[Drain] source=${source}, api=readLatestImage, read=${readCount}, released=${releasedCount}, pending=${this.latestPendingImage ? 1 : 0}, discardedImages=${this.discardedImageCount}, cost=${Date.now() - drainStart}ms`);
+    }
+  }
+
+  private async releasePendingImage(entry: PendingImageEntry | undefined, reason: string): Promise<void> {
+    if (!entry) {
+      return;
+    }
+    if (this.processingImage === entry && reason !== 'processed') {
+      console.warn(`[Capture] Skip release processing image, reason=${reason}`);
+      return;
+    }
+
+    try {
+      await entry.img.release();
+    } catch (err) {
+      let error = err as BusinessError;
+      console.warn(`[Capture] Release image failed, reason=${reason}, code=${error.code}, message=${error.message}`);
+    }
+  }
+
+  private async releasePendingImages(reason: string): Promise<void> {
+    const entry = this.latestPendingImage;
+    this.latestPendingImage = null;
+    if (!entry || entry === this.processingImage) {
+      return;
+    }
+    await this.releasePendingImage(entry, reason);
+    this.discardedImageCount++;
+  }
+
+  private async waitForProcessingIdle(): Promise<void> {
+    while (this.processingFrame || this.receiverReading) {
+      await this.sleep(10);
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
 
   /**
-   * 单帧截图 - 使用 ImageReceiver + setVirtualScreenSurface
+   * 单帧截图 - 处理已经从 ImageReceiver 读出的 Image
    * 帧数据先缓存到内存，截图结束后统一写盘
    */
-  private async captureSingleFrame(frameIndex: number): Promise<FrameData> {
+  private async captureSingleFrame(entry: PendingImageEntry, frameIndex: number): Promise<FrameData> {
     const t0 = Date.now();
     const timestamp = Date.now() * 1000000;
     const outputPath = `${this.options.outputDir}/frame_${timestamp}.jpg`;
@@ -257,21 +434,18 @@ export class VirtualScreenManager {
       const captureWidth = this.resolvedCaptureWidth;
       const captureHeight = this.resolvedCaptureHeight;
 
-      const img = await this.imageReceiver!.readLatestImage();
-      const t1 = Date.now();
-
+      const img = entry.img;
+      const componentStart = Date.now();
       const component = await img.getComponent(image.ComponentType.JPEG);
-      const t2 = Date.now();
+      const componentEnd = Date.now();
 
+      const copyStart = Date.now();
       const frameCopy = component.byteBuffer.slice(0);
       this.frameBuffers.push({ format: 'JPEG', buffers: [frameCopy] });
-      const t3 = Date.now();
+      const copyEnd = Date.now();
 
-      img.release();
-      const t4 = Date.now();
-
-      const elapsed = t4 - t0;
-      console.info(`[Capture] Frame ${frameIndex}: mode=JPEG, img.format=${img.format}, img.size=${img.size.width}x${img.size.height}, size=${component.byteBuffer.byteLength}, rowStride=${component.rowStride}, pixelStride=${component.pixelStride}, readLatest=${t1 - t0}ms, getComponent=${t2 - t1}ms, copy=${t3 - t2}ms, release=${t4 - t3}ms, total=${elapsed}ms`);
+      const elapsed = copyEnd - t0;
+      console.info(`[Capture] Frame ${frameIndex}: source=${entry.source}, mode=JPEG, img.format=${img.format}, img.size=${img.size.width}x${img.size.height}, size=${component.byteBuffer.byteLength}, rowStride=${component.rowStride}, pixelStride=${component.pixelStride}, readLatest=${entry.readCostMs}ms, queueWait=${t0 - entry.queuedAt}ms, getComponent=${componentEnd - componentStart}ms, copy=${copyEnd - copyStart}ms, total=${elapsed}ms, pending=${this.latestPendingImage ? 1 : 0}, discardedImages=${this.discardedImageCount}`);
 
       return {
         index: frameIndex,
