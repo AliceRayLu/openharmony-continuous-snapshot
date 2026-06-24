@@ -202,7 +202,7 @@ Message: ${this.analysisResult.message}
               Slider({
                 value: this.durationSec,
                 min: 1,
-                max: 30,
+                max: 120,
                 step: 1
               })
                 .layoutWeight(1)

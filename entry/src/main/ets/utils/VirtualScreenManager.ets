@@ -18,10 +18,7 @@ export interface ScreenshotOptions {
 interface EncodeTiming {
   createPixelMapMs: number;
   createPackerMs: number;
-  openFileMs: number;
   packToFileMs: number;
-  closeFileMs: number;
-  totalMs: number;
 }
 
 interface PendingImageEntry {
@@ -56,6 +53,7 @@ export interface AnalysisResult {
 export class VirtualScreenManager {
   private static readonly RECEIVER_CAPACITY: number = 10;
   private static readonly WAIT_DRAIN_INTERVAL_MS: number = 16;
+  private static readonly SOURCE_FRAME_INTERVAL_MS: number = 1000 / 66;
   private static readonly JPEG_FORMAT: string = 'image/jpeg';
   private static readonly JPEG_QUALITY: number = 85;
 
@@ -69,6 +67,7 @@ export class VirtualScreenManager {
   private options: ScreenshotOptions;
   private captureStartTime: number = 0;
   private lastCaptureTime: number = 0;
+  private lastReceiverDrainTime: number = 0;
   private captureTimes: number[] = [];
   private imageReceiver: image.ImageReceiver | null = null;
   private resolvedCaptureWidth: number = 0;
@@ -194,6 +193,7 @@ export class VirtualScreenManager {
     this.frameList = [];
     this.captureTimes = [];
     this.lastCaptureTime = 0;
+    this.lastReceiverDrainTime = 0;
     this.latestPendingImage = null;
     this.processingImage = null;
     this.processingFrame = false;
@@ -211,7 +211,7 @@ export class VirtualScreenManager {
       image.ImageFormat.JPEG,
       VirtualScreenManager.RECEIVER_CAPACITY
     );
-    console.info(`[Capture] ImageReceiver created, size=${this.resolvedCaptureWidth}x${this.resolvedCaptureHeight}, format=${this.options.captureFormat}, capacity=${VirtualScreenManager.RECEIVER_CAPACITY}, drainApi=readLatestImage`);
+    console.info(`[Capture] ImageReceiver created, size=${this.resolvedCaptureWidth}x${this.resolvedCaptureHeight}, format=${this.options.captureFormat}, capacity=${VirtualScreenManager.RECEIVER_CAPACITY}, drainApi=timeBasedReadNext, sourceFrameIntervalMs=${VirtualScreenManager.SOURCE_FRAME_INTERVAL_MS}`);
 
     const surfaceId = await this.imageReceiver.getReceivingSurfaceId();
     console.info(`[Capture] ImageReceiver surfaceId: ${surfaceId}`);
@@ -222,6 +222,7 @@ export class VirtualScreenManager {
     // 在此之后才开始计时，不把 setup 耗时算入帧率
     this.captureStartTime = Date.now();
     this.lastCaptureTime = this.captureStartTime - this.options.intervalMs;
+    this.lastReceiverDrainTime = this.captureStartTime;
 
     console.info(`[Capture] Starting continuous capture, target ${this.totalFrames} frames, intervalMs=${this.options.intervalMs}, durationSec=${this.options.durationSec}, outputDir=${this.options.outputDir}, virtualScreenId=${this.virtualScreenId}, mainScreenId=${this.mainScreenId}, defaultDisplayId=${this.defaultDisplayId}`);
 
@@ -343,46 +344,53 @@ export class VirtualScreenManager {
     }
 
     this.receiverReading = true;
-    let img: image.Image | null = null;
     let releasedCount = 0;
     let readCount = 0;
+    let failedReadCount = 0;
     const drainStart = Date.now();
+    const elapsedSinceLastDrain = Math.max(1, drainStart - this.lastReceiverDrainTime);
+    const estimatedFrames = Math.ceil(elapsedSinceLastDrain / VirtualScreenManager.SOURCE_FRAME_INTERVAL_MS);
+    const drainLimit = Math.min(VirtualScreenManager.RECEIVER_CAPACITY, estimatedFrames);
+    this.lastReceiverDrainTime = drainStart;
+
     try {
-      const oldEntry = this.latestPendingImage;
-      if (oldEntry) {
-        this.latestPendingImage = null;
-        await this.releasePendingImage(oldEntry, 'replace latest before read');
-        this.discardedImageCount++;
-        releasedCount++;
-      }
-
-      const readStart = Date.now();
-      img = await this.imageReceiver.readLatestImage();
-      const readCostMs = Date.now() - readStart;
-      const queuedAt = Date.now();
-      readCount = 1;
-
-      this.latestPendingImage = {
-        img: img,
-        readCostMs: readCostMs,
-        queuedAt: queuedAt,
-        source: source,
-        estimatedSkippedBefore: 0
-      };
-      img = null;
-    } catch (_) {
-      if (img) {
+      for (let i = 0; i < drainLimit; i++) {
+        let img: image.Image | null = null;
+        let readCostMs = 0;
         try {
-          await img.release();
+          const readStart = Date.now();
+          img = await this.imageReceiver.readNextImage();
+          readCostMs = Date.now() - readStart;
         } catch (_) {
+          failedReadCount++;
+          break;
         }
+
+        const queuedAt = Date.now();
+        const oldEntry = this.latestPendingImage;
+        if (oldEntry) {
+          this.latestPendingImage = null;
+          await this.releasePendingImage(oldEntry, 'replace latest during drain');
+          this.discardedImageCount++;
+          releasedCount++;
+        }
+
+        this.latestPendingImage = {
+          img: img,
+          readCostMs: readCostMs,
+          queuedAt: queuedAt,
+          source: source,
+          estimatedSkippedBefore: i
+        };
+        img = null;
+        readCount++;
       }
     } finally {
       this.receiverReading = false;
     }
 
-    if (readCount > 0 || releasedCount > 0) {
-      console.info(`[Drain] source=${source}, api=readLatestImage, read=${readCount}, released=${releasedCount}, pending=${this.latestPendingImage ? 1 : 0}, discardedImages=${this.discardedImageCount}, cost=${Date.now() - drainStart}ms`);
+    if (readCount > 0 || releasedCount > 0 || failedReadCount > 0) {
+      console.info(`[Drain] source=${source}, api=timeBasedReadNext, elapsed=${elapsedSinceLastDrain}ms, estimated=${estimatedFrames}, limit=${drainLimit}, read=${readCount}, readEmpty=${failedReadCount}, released=${releasedCount}, pending=${this.latestPendingImage ? 1 : 0}, discardedImages=${this.discardedImageCount}, cost=${Date.now() - drainStart}ms`);
     }
   }
 
@@ -442,9 +450,8 @@ export class VirtualScreenManager {
       const componentEnd = Date.now();
 
       const encodeTiming = await this.encodeComponentToJpegFile(component, captureWidth, captureHeight, outputPath);
-      const elapsed = Date.now() - t0;
 
-      console.info(`[Capture] Frame ${frameIndex}: source=${entry.source}, mode=directEncode, img.format=${img.format}, img.size=${img.size.width}x${img.size.height}, size=${component.byteBuffer.byteLength}, rowStride=${component.rowStride}, pixelStride=${component.pixelStride}, readLatest=${entry.readCostMs}ms, queueWait=${t0 - entry.queuedAt}ms, getComponent=${componentEnd - componentStart}ms, createPixelMap=${encodeTiming.createPixelMapMs}ms, createPacker=${encodeTiming.createPackerMs}ms, open=${encodeTiming.openFileMs}ms, packToFile=${encodeTiming.packToFileMs}ms, close=${encodeTiming.closeFileMs}ms, encodeAndWrite=${encodeTiming.totalMs}ms, total=${elapsed}ms, pending=${this.latestPendingImage ? 1 : 0}, discardedImages=${this.discardedImageCount}`);
+      console.info(`[Capture] Frame ${frameIndex}: source=${entry.source}, mode=directEncode, img.format=${img.format}, img.size=${img.size.width}x${img.size.height}, size=${component.byteBuffer.byteLength}, rowStride=${component.rowStride}, pixelStride=${component.pixelStride}, readLatest=${entry.readCostMs}ms, queueWait=${t0 - entry.queuedAt}ms, getComponent=${componentEnd - componentStart}ms, createPixelMap=${encodeTiming.createPixelMapMs}ms, createPacker=${encodeTiming.createPackerMs}ms, packToFile=${encodeTiming.packToFileMs}ms, pending=${this.latestPendingImage ? 1 : 0}, discardedImages=${this.discardedImageCount}`);
 
       return {
         index: frameIndex,
@@ -462,8 +469,6 @@ export class VirtualScreenManager {
   }
 
   private async encodeComponentToJpegFile(component: image.Component, width: number, height: number, path: string): Promise<EncodeTiming> {
-    const totalStart = Date.now();
-
     const pixelMapStart = Date.now();
     const pixelMap = await image.createPixelMap(component.byteBuffer, {
       size: {
@@ -480,18 +485,18 @@ export class VirtualScreenManager {
     const packer = image.createImagePacker();
     const packerEnd = Date.now();
 
-    const openStart = Date.now();
-    const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
-    const openEnd = Date.now();
-
     let packToFileMs = 0;
-    let closeFileMs = 0;
     try {
       const packStart = Date.now();
-      await packer.packToFile(pixelMap, file.fd, {
-        format: VirtualScreenManager.JPEG_FORMAT,
-        quality: VirtualScreenManager.JPEG_QUALITY
-      });
+      const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+      try {
+        await packer.packToFile(pixelMap, file.fd, {
+          format: VirtualScreenManager.JPEG_FORMAT,
+          quality: VirtualScreenManager.JPEG_QUALITY
+        });
+      } finally {
+        fs.closeSync(file);
+      }
       packToFileMs = Date.now() - packStart;
     } finally {
       try {
@@ -502,18 +507,12 @@ export class VirtualScreenManager {
         await packer.release();
       } catch (_) {
       }
-      const closeStart = Date.now();
-      fs.closeSync(file);
-      closeFileMs = Date.now() - closeStart;
     }
 
     return {
       createPixelMapMs: pixelMapEnd - pixelMapStart,
       createPackerMs: packerEnd - packerStart,
-      openFileMs: openEnd - openStart,
-      packToFileMs: packToFileMs,
-      closeFileMs: closeFileMs,
-      totalMs: Date.now() - totalStart
+      packToFileMs: packToFileMs
     };
   }
 
